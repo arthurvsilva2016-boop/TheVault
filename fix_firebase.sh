@@ -1,0 +1,2 @@
+perl -0777 -pi -e 's/import \{ getFirestore \} from '\''firebase\/firestore'\'';/import { getFirestore, enableIndexedDbPersistence } from '\''firebase\/firestore'\'';/s' src/firebase.ts
+perl -0777 -pi -e 's/export const db = .*?;\n/export const db = (firebaseConfig as any).firestoreDatabaseId ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId) : getFirestore(app);\n\nenableIndexedDbPersistence(db).catch((err) => console.warn("Firebase persistence error:", err.code));\n/s' src/firebase.ts

@@ -1,0 +1,40 @@
+--- src/components/game/VoxelWorld.ts
++++ src/components/game/VoxelWorld.ts
+@@ -48,15 +48,17 @@
+     const grassIndex = BLOCKS.find(b => b.id === 'grass')?.index || 1;
+     const stoneIndex = BLOCKS.find(b => b.id === 'granite')?.index || 20;
+     const waterIndex = BLOCKS.find(b => b.id === 'fresh_water')?.index || 0;
++    const woodIndex = BLOCKS.find(b => b.id === 'oak_wood')?.index || 1;
++    const leafIndex = BLOCKS.find(b => b.id === 'moss')?.index || 200;
+ 
+     for (let x = 0; x < CHUNK_SIZE; x++) {
+       for (let z = 0; z < CHUNK_SIZE; z++) {
+         const globalX = cx * CHUNK_SIZE + x;
+         const globalZ = cz * CHUNK_SIZE + z;
+-        const height = Math.floor(fbm(globalX * 0.05, globalZ * 0.05) * 12) + 8;
++        const height = Math.floor(fbm(globalX * 0.02, globalZ * 0.02) * 12) + 8;
+         
+         for (let y = 0; y < CHUNK_SIZE; y++) {
+           const globalY = cy * CHUNK_SIZE + y;
+           if (globalY < height - 2) {
+             data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = stoneIndex;
+           } else if (globalY <= height) {
+@@ -65,6 +67,23 @@
+           } else if (globalY <= 6 && waterIndex > 0) {
+              data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = waterIndex;
+           }
++          
++          // Simple tree generation logic (local to this chunk for now)
++          // We use pseudo-random based on coordinates so it's deterministic
++          const treeHash = (globalX * 31 + globalZ * 17) % 100;
++          if (treeHash === 0 && height > 6) { // Tree trunk at this x,z
++            if (globalY > height && globalY <= height + 4) {
++              data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = woodIndex;
++            }
++            if (globalY > height + 2 && globalY <= height + 5) {
++               // We want leaves around the trunk. Let's just do it directly here? No, leaves spread to other x,z.
++            }
++          }
+         }
+       }
+     }

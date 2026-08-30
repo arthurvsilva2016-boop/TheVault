@@ -1,0 +1,81 @@
+--- src/components/game/VoxelWorld.ts
++++ src/components/game/VoxelWorld.ts
+@@ -41,17 +41,27 @@
+   getChunkForBlock(x: number, y: number, z: number) {
+     return { cx: Math.floor(x / CHUNK_SIZE), cy: Math.floor(y / CHUNK_SIZE), cz: Math.floor(z / CHUNK_SIZE) };
+   }
+ 
++  getTerrainHeight(x: number, z: number) {
++    return Math.floor(fbm(x * 0.05, z * 0.05) * 12) + 8;
++  }
++  
++  isTreeAt(x: number, z: number) {
++     const hash = Math.abs(Math.sin(x * 12.9898 + z * 78.233) * 43758.5453);
++     return (hash - Math.floor(hash)) < 0.02 && this.getTerrainHeight(x, z) > 6;
++  }
++
+   generateChunk(cx: number, cy: number, cz: number) {
+     const key = this.getChunkKey(cx, cy, cz);
+     if (this.chunks.has(key)) return this.chunks.get(key)!;
+ 
+     const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE);
+     const grassIndex = BLOCKS.find(b => b.id === 'grass')?.index || 1;
+     const stoneIndex = BLOCKS.find(b => b.id === 'granite')?.index || 20;
+     const waterIndex = BLOCKS.find(b => b.id === 'fresh_water')?.index || 0;
++    const woodIndex = BLOCKS.find(b => b.id === 'oak_wood')?.index || 1;
++    const leafIndex = BLOCKS.find(b => b.id === 'moss')?.index || 200;
+ 
+     for (let x = 0; x < CHUNK_SIZE; x++) {
+       for (let z = 0; z < CHUNK_SIZE; z++) {
+         const globalX = cx * CHUNK_SIZE + x;
+         const globalZ = cz * CHUNK_SIZE + z;
+-        const height = Math.floor(fbm(globalX * 0.05, globalZ * 0.05) * 12) + 8;
++        const height = this.getTerrainHeight(globalX, globalZ);
+         
+         for (let y = 0; y < CHUNK_SIZE; y++) {
+           const globalY = cy * CHUNK_SIZE + y;
+           if (globalY < height - 2) {
+             data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = stoneIndex;
+           } else if (globalY <= height) {
+             data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = grassIndex;
+           } else if (globalY <= 6 && waterIndex > 0) {
+              data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = waterIndex;
++          } else {
++             // Check for trees nearby
++             let isWood = false;
++             let isLeaf = false;
++             
++             // Trunk
++             if (this.isTreeAt(globalX, globalZ) && globalY > height && globalY <= height + 4) {
++                 isWood = true;
++             } else {
++                 // Leaves
++                 for (let dx = -2; dx <= 2; dx++) {
++                     for (let dz = -2; dz <= 2; dz++) {
++                         if (dx*dx + dz*dz <= 5) { // Sphere-ish
++                             const tx = globalX + dx;
++                             const tz = globalZ + dz;
++                             if (this.isTreeAt(tx, tz)) {
++                                 const theight = this.getTerrainHeight(tx, tz);
++                                 const dy = globalY - theight;
++                                 if (dy >= 3 && dy <= 6) {
++                                     // Make it rounder
++                                     if (dx*dx + (dy-4)*(dy-4) + dz*dz <= 6) {
++                                        isLeaf = true;
++                                     }
++                                 }
++                             }
++                         }
++                     }
++                 }
++             }
++             
++             if (isWood) {
++                 data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = woodIndex;
++             } else if (isLeaf) {
++                 data[x + y * CHUNK_SIZE + z * CHUNK_SIZE * CHUNK_SIZE] = leafIndex;
++             }
+           }
+         }
+       }
+     }

@@ -1,0 +1,261 @@
+--- src/components/game/World.tsx
++++ src/components/game/World.tsx
+@@ -7,6 +7,8 @@
+ import { Player } from './Player';
+ import { BLOCKS, BLOCK_BY_INDEX } from './vocabData';
+ import { audioSystem } from './AudioSystem';
+-import { ArrowLeft, Settings, Pickaxe, Hammer } from 'lucide-react';
++import { ArrowLeft, Settings, Pickaxe, Hammer, Heart, Drumstick } from 'lucide-react';
+ import { Student } from '../../types';
++import { db } from '../../firebase';
++import { doc, getDoc, setDoc } from 'firebase/firestore';
+ 
+@@ -83,6 +85,8 @@
+   settingsOpen: boolean,
++  onBlockBreak: (id: number) => void,
++  onBlockPlace: (id: number) => void
+ }) {
+   const { camera, gl } = useThree();
+   const raycaster = new THREE.Raycaster();
+@@ -103,11 +107,13 @@
+         if (world.getBlock(bx, by, bz) > 0) {
+           hit = true;
+           if (mode === 'break') {
++            const brokenId = world.getBlock(bx, by, bz);
+             world.setBlock(bx, by, bz, 0);
+             audioSystem.playBlockPlace(); // reuse place sound for break
++            onBlockBreak(brokenId);
+           } else {
+             const px = Math.floor(lastAir.x / BLOCK_SIZE);
+             const py = Math.floor(lastAir.y / BLOCK_SIZE);
+             const pz = Math.floor(lastAir.z / BLOCK_SIZE);
+             world.setBlock(px, py, pz, selectedBlock);
+             audioSystem.playBlockPlace();
++            onBlockPlace(selectedBlock);
+           }
+           break;
+@@ -142,6 +148,10 @@
+   const [settingsOpen, setSettingsOpen] = useState(false);
+   const [inventoryOpen, setInventoryOpen] = useState(false);
+   const [hoveredBlockName, setHoveredBlockName] = useState<string>('');
++  const [health, setHealth] = useState(100);
++  const [hunger, setHunger] = useState(100);
++  const [inventory, setInventory] = useState<Record<number, number>>({});
++  const [craftingOpen, setCraftingOpen] = useState(false);
+ 
+   useEffect(() => {
+     const handleKeyDown = (e: KeyboardEvent) => {
+@@ -151,10 +161,28 @@
+            return !prev;
+         });
+       }
++      if (e.code === 'KeyF') { // Consume
++        if (hunger < 100) {
++           const count = inventory[selectedBlock] || 0;
++           if (count > 0) {
++               const b = BLOCK_BY_INDEX.get(selectedBlock);
++               if (b && (b.name.toLowerCase().includes('meat') || b.name.toLowerCase().includes('apple') || b.name.toLowerCase().includes('berry') || b.name.toLowerCase().includes('carrot'))) {
++                   setHunger(h => Math.min(100, h + 20));
++                   setInventory(prev => ({ ...prev, [selectedBlock]: prev[selectedBlock] - 1 }));
++               }
++           }
++        }
++      }
++      if (e.code === 'KeyC') {
++        setCraftingOpen(prev => {
++           if (!prev) document.exitPointerLock();
++           return !prev;
++        });
++      }
+     };
+     const handleWheel = (e: WheelEvent) => {
+-      if (settingsOpen || inventoryOpen) return;
+-      const validBlocks = BLOCKS.filter(b => b.id !== 'air');
++      if (settingsOpen || inventoryOpen || craftingOpen) return;
++      const validBlocks = BLOCKS.filter(b => b.id !== 'air' && (inventory[b.index] > 0 || isTeacher));
+       if (validBlocks.length === 0) return;
+       const currentIndex = validBlocks.findIndex(b => b.index === selectedBlock);
+       if (currentIndex === -1) { setSelectedBlock(validBlocks[0].index); return; }
+@@ -165,11 +193,52 @@
+       setMode('build');
+     };
+     window.addEventListener('keydown', handleKeyDown);
+     window.addEventListener('wheel', handleWheel);
+     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('wheel', handleWheel); };
+-  }, [selectedBlock, settingsOpen, inventoryOpen]);
++  }, [selectedBlock, settingsOpen, inventoryOpen, craftingOpen, inventory, hunger, isTeacher]);
+ 
+   useEffect(() => {
++    // Load from Firebase
++    const load = async () => {
++       try {
++         const snap = await getDoc(doc(db, 'vivlio_worlds', student.id));
++         if (snap.exists()) {
++            const d = snap.data();
++            if (d.chunks) world.deserialize(d.chunks);
++            if (typeof d.health === 'number') setHealth(d.health);
++            if (typeof d.hunger === 'number') setHunger(d.hunger);
++            if (d.inventory) setInventory(d.inventory);
++         }
++       } catch(e) {}
++    };
++    load();
++  }, [student.id, world]);
++
++  useEffect(() => {
++    // Save periodically
++    const interval = setInterval(() => {
++        setDoc(doc(db, 'vivlio_worlds', student.id), {
++            chunks: world.serialize(),
++            health,
++            hunger,
++            inventory
++        }, { merge: true }).catch(console.error);
++    }, 15000);
++    return () => clearInterval(interval);
++  }, [student.id, world, health, hunger, inventory]);
++
++  useEffect(() => {
++    // Hunger depletion
++    const interval = setInterval(() => {
++       setHunger(h => {
++          if (h <= 0) { setHealth(hl => Math.max(0, hl - 5)); return 0; }
++          return Math.max(0, h - 2);
++       });
++    }, 10000);
++    return () => clearInterval(interval);
++  }, []);
++
++  useEffect(() => {
+     for (let x = -2; x <= 2; x++) {
+       for (let z = -2; z <= 2; z++) {
+         world.generateChunk(x, 0, z);
+@@ -178,6 +247,19 @@
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+   }, []);
+ 
++  const onBlockBreak = (id: number) => {
++    setInventory(prev => ({...prev, [id]: (prev[id] || 0) + 1}));
++  };
++  const onBlockPlace = (id: number) => {
++    if (!isTeacher) {
++      setInventory(prev => {
++         const next = {...prev, [id]: Math.max(0, (prev[id] || 0) - 1)};
++         if (next[id] === 0) {
++           // switch to next block
++           const available = BLOCKS.find(b => next[b.index] > 0);
++           if (available) setSelectedBlock(available.index);
++         }
++         return next;
++      });
++    }
++  };
++
+   return (
+     <div className="w-full h-[calc(100vh-8rem)] relative bg-slate-950 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
+       
+@@ -194,6 +276,19 @@
+           </button>
+         </div>
+       </div>
++      
++      {/* HUD (Health & Hunger) */}
++      <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 pointer-events-none">
++         <div className="flex items-center gap-2 bg-black/50 px-3 py-1.5 rounded-full border border-red-500/30">
++            <Heart className="w-5 h-5 text-red-500 fill-red-500" />
++            <div className="w-32 h-2 bg-black/60 rounded-full overflow-hidden"><div className="h-full bg-red-500" style={{width: `${health}%`}}></div></div>
++         </div>
++         <div className="flex items-center gap-2 bg-black/50 px-3 py-1.5 rounded-full border border-amber-600/30">
++            <Drumstick className="w-5 h-5 text-amber-600 fill-amber-600" />
++            <div className="w-32 h-2 bg-black/60 rounded-full overflow-hidden"><div className="h-full bg-amber-600" style={{width: `${hunger}%`}}></div></div>
++         </div>
++         <div className="text-white text-xs text-right mt-1 opacity-70">Press 'F' to eat food<br/>Press 'C' to craft</div>
++      </div>
+ 
+       {/* Toolbar */}
+       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 pointer-events-auto flex gap-2">
+@@ -204,15 +299,19 @@
+         </button>
+         
+         <div className="flex bg-black/50 p-2 rounded-xl gap-2 overflow-x-auto max-w-lg no-scrollbar">
+-          {BLOCKS.slice(0, 50).map(b => (
++          {BLOCKS.filter(b => b.id !== 'air').map(b => {
++            const count = inventory[b.index] || 0;
++            if (count === 0 && !isTeacher && selectedBlock !== b.index) return null;
++            return (
+             <button
+               key={b.id}
+               onClick={() => { setSelectedBlock(b.index); setMode('build'); }}
+-              className={`w-10 h-10 rounded-lg flex-shrink-0 border-2 transition ${selectedBlock === b.index ? 'border-white scale-110' : 'border-transparent'}`}
++              className={`relative w-10 h-10 rounded-lg flex-shrink-0 border-2 transition ${selectedBlock === b.index ? 'border-white scale-110' : 'border-transparent'}`}
+               style={{ backgroundColor: b.color }}
+               title={b.name}
+-            />
+-          ))}
++            >
++              {count > 0 && <span className="absolute -bottom-1 -right-1 bg-black/80 text-white text-[9px] px-1 rounded-full">{count}</span>}
++            </button>
++          )})}
+         </div>
+       </div>
+ 
+@@ -226,16 +325,48 @@
+             <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-3 overflow-y-auto no-scrollbar pb-10">
+               {BLOCKS.filter(b => b.id !== 'air').map(b => (
+                 <button
+                   key={b.id}
+                   onClick={() => { setSelectedBlock(b.index); setMode('build'); setInventoryOpen(false); }}
+-                  className={`aspect-square rounded-lg flex flex-col items-center justify-center border-2 transition overflow-hidden ${selectedBlock === b.index ? 'border-emerald-500 scale-105 shadow-[0_0_15px_rgba(16,185,129,0.5)]' : 'border-slate-800 hover:border-slate-600'}`}
++                  className={`relative aspect-square rounded-lg flex flex-col items-center justify-center border-2 transition overflow-hidden ${selectedBlock === b.index ? 'border-emerald-500 scale-105 shadow-[0_0_15px_rgba(16,185,129,0.5)]' : 'border-slate-800 hover:border-slate-600'}`}
+                   style={{ backgroundColor: b.color }}
+                   title={b.name}
+                 >
+                   <span className="mt-auto bg-black/70 text-[10px] w-full truncate px-1 text-center text-white/90 pb-1">{b.name}</span>
++                  {inventory[b.index] > 0 && <span className="absolute top-1 right-1 bg-black/80 text-white text-[10px] px-1.5 rounded-full">{inventory[b.index]}</span>}
+                 </button>
+               ))}
+             </div>
+           </div>
+         </div>
+       )}
++      
++      {craftingOpen && (
++        <div className="absolute inset-0 bg-black/80 z-50 flex items-center justify-center p-8 backdrop-blur-sm">
++           <div className="bg-slate-900 border border-slate-700 p-6 rounded-2xl w-full max-w-lg flex flex-col">
++              <div className="flex justify-between items-center mb-6">
++                 <h2 className="text-2xl font-bold text-white">Crafting</h2>
++                 <button onClick={() => setCraftingOpen(false)} className="text-slate-400 hover:text-white font-bold">Close (C)</button>
++              </div>
++              <div className="flex flex-col gap-4">
++                 {/* Simple Crafting Recipe: 2 Wood -> 1 Workbench */}
++                 <div className="flex items-center justify-between bg-slate-800 p-4 rounded-xl border border-slate-700">
++                    <div className="flex items-center gap-4 text-white">
++                       <div className="flex items-center gap-2"><div className="w-8 h-8 rounded" style={{backgroundColor: BLOCK_BY_INDEX.get(1)?.color}}></div> 2x Oak Wood</div>
++                       <span>→</span>
++                       <div className="flex items-center gap-2"><div className="w-8 h-8 rounded" style={{backgroundColor: BLOCK_BY_INDEX.get(201)?.color}}></div> Workbench</div>
++                    </div>
++                    <button onClick={() => {
++                        if ((inventory[1] || 0) >= 2) {
++                            setInventory(prev => ({...prev, 1: prev[1] - 2, 201: (prev[201] || 0) + 1}));
++                        }
++                    }} disabled={(inventory[1] || 0) < 2} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 rounded-lg text-white font-bold transition">Craft</button>
++                 </div>
++                 {/* Craft Stone Brick from Stone */}
++                 <div className="flex items-center justify-between bg-slate-800 p-4 rounded-xl border border-slate-700">
++                    <div className="flex items-center gap-4 text-white">
++                       <div className="flex items-center gap-2"><div className="w-8 h-8 rounded" style={{backgroundColor: BLOCK_BY_INDEX.get(20)?.color}}></div> 4x Granite</div>
++                       <span>→</span>
++                       <div className="flex items-center gap-2"><div className="w-8 h-8 rounded" style={{backgroundColor: BLOCK_BY_INDEX.get(189)?.color}}></div> White Clay</div>
++                    </div>
++                    <button onClick={() => {
++                        if ((inventory[20] || 0) >= 4) {
++                            setInventory(prev => ({...prev, 20: prev[20] - 4, 189: (prev[189] || 0) + 1}));
++                        }
++                    }} disabled={(inventory[20] || 0) < 4} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:hover:bg-emerald-600 rounded-lg text-white font-bold transition">Craft</button>
++                 </div>
++              </div>
++           </div>
++        </div>
++      )}
+ 
+       {settingsOpen && (

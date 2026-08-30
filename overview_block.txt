@@ -1,0 +1,127 @@
+   550	
+   551	      {/* TAB: OVERVIEW */}
+   552	      {groupView === 'overview' && (
+   553	        <div className="bg-brand-card rounded-xl border border-brand-border p-6 space-y-4 relative">
+   554	          {!isEditing ? (
+   555	            <button onClick={startEditing} className="absolute top-6 right-6 p-2 bg-brand-dark border border-brand-border rounded-lg text-slate-400 hover:text-white transition cursor-pointer" title="Edit Group">
+   556	              <Edit2 className="w-4 h-4" />
+   557	            </button>
+   558	          ) : (
+   559	            <div className="absolute top-6 right-6 flex space-x-2">
+   560	              <button onClick={() => setIsEditing(false)} className="p-2 bg-brand-dark border border-brand-border rounded-lg text-slate-400 hover:text-white transition cursor-pointer">
+   561	                <X className="w-4 h-4" />
+   562	              </button>
+   563	              <button onClick={saveEditing} className="p-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 transition cursor-pointer flex items-center">
+   564	                {saveSuccess ? <><Check className="w-4 h-4 mr-1"/> Saved</> : <><Save className="w-4 h-4" /></>}
+   565	              </button>
+   566	            </div>
+   567	          )}
+   568	
+   569	          <h3 className="text-lg font-bold text-slate-200 border-b border-brand-border pb-4">{group.name || group.code} Information</h3>
+   570	          
+   571	          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+   572	            <div className="space-y-3">
+   573	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   574	                <span className="text-slate-400">Group Code Number:</span>
+   575	                <span className="text-slate-200 font-mono font-bold cursor-not-allowed opacity-80">{group.code}</span>
+   576	              </div>
+   577	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   578	                <span className="text-slate-400">Level / Book:</span>
+   579	                {isEditing ? (
+   580	                  <input type="text" value={editData.level} onChange={e => setEditData({...editData, level: e.target.value})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-purple-500 text-right w-48" />
+   581	                ) : <span className="text-slate-200">{group.level}</span>}
+   582	              </div>
+   583	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   584	                <span className="text-slate-400">Teacher:</span>
+   585	                {isEditing ? (
+   586	                  <input type="text" value={editData.teacher} onChange={e => setEditData({...editData, teacher: e.target.value})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-purple-500 text-right w-48" />
+   587	                ) : (
+   588	                  <button 
+   589	                    type="button" 
+   590	                    onClick={() => onNavigate && onNavigate('staff', group.teacher)} 
+   591	                    className="text-purple-400 hover:underline cursor-pointer"
+   592	                  >
+   593	                    {group.teacher}
+   594	                  </button>
+   595	                )}
+   596	              </div>
+   597	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   598	                <span className="text-slate-400">Status:</span>
+   599	                {isEditing ? (
+   600	                  <select value={editData.status} onChange={e => setEditData({...editData, status: e.target.value as any})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-purple-500 text-right w-48 cursor-pointer">
+   601	                    <option value="active">Active</option>
+   602	                    <option value="upcoming">Upcoming</option>
+   603	                    <option value="completed">Completed</option>
+   604	                  </select>
+   605	                ) : <span className="text-slate-200 capitalize">{group.status}</span>}
+   606	              </div>
+   607	            </div>
+   608	            
+   609	            <div className="space-y-3">
+   610	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   611	                <span className="text-slate-400">Schedule:</span>
+   612	                {isEditing ? (
+   613	                  <input type="text" value={editData.schedule} onChange={e => setEditData({...editData, schedule: e.target.value})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-purple-500 text-right w-48" />
+   614	                ) : <span className="text-slate-200">{group.schedule}</span>}
+   615	              </div>
+   616	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   617	                <span className="text-slate-400">Duration:</span>
+   618	                {isEditing ? (
+   619	                  <div className="flex space-x-2">
+   620	                    <input type="date" value={editData.startDate} onChange={e => setEditData({...editData, startDate: e.target.value})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none w-28 text-xs [color-scheme:dark]" />
+   621	                    <span className="text-slate-500">to</span>
+   622	                    <input type="date" value={editData.endDate} onChange={e => setEditData({...editData, endDate: e.target.value})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none w-28 text-xs [color-scheme:dark]" />
+   623	                  </div>
+   624	                ) : <span className="text-slate-200">{group.startDate} to {group.endDate}</span>}
+   625	              </div>
+   626	              <div className="flex justify-between border-b border-brand-border/50 pb-2 items-center">
+   627	                <span className="text-slate-400">Enrolled Students:</span>
+   628	                <span className="text-slate-200">{groupStudents.length} / 10 Max</span>
+   629	              </div>
+   630	              <div className="flex justify-between pb-2 items-center">
+   631	                <span className="text-slate-400">Meet Link:</span>
+   632	                {isEditing ? (
+   633	                  <input type="text" value={editData.meetLink} onChange={e => setEditData({...editData, meetLink: e.target.value})} className="bg-brand-dark border border-brand-border rounded px-2 py-1 text-slate-200 focus:outline-none focus:border-purple-500 text-right w-48" />
+   634	                ) : (
+   635	                  <a href={`https://${group.meetLink}`} target="_blank" rel="noreferrer" className="text-purple-400 hover:underline">{group.meetLink || 'Not Set'}</a>
+   636	                )}
+   637	              </div>
+   638	            </div>
+   639	          </div>
+   640	
+   641	          {/* Enrolled Students Directory for this Group */}
+   642	          <div className="pt-4 border-t border-brand-border space-y-3">
+   643	            <h4 className="text-sm font-bold text-slate-200">Enrolled Students</h4>
+   644	            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+   645	              {groupStudents.map((st) => (
+   646	                <div 
+   647	                  key={st.id}
+   648	                  onClick={() => onNavigate && onNavigate('student', st.id)}
+   649	                  className="p-3 bg-brand-dark rounded-lg border border-brand-border hover:border-purple-500/50 transition cursor-pointer flex justify-between items-center group"
+   650	                >
+   651	                  <div>
+   652	                    <span className="font-semibold text-slate-200 group-hover:text-purple-300 transition text-sm">{st.name}</span>
+   653	                    <span className="block text-[11px] text-slate-400">{st.email}</span>
+   654	                  </div>
+   655	                  <span className="text-xs text-purple-400">Profile →</span>
+   656	                </div>
+   657	              ))}
+   658	            </div>
+   659	          </div>
+   660	        </div>
+   661	      )}
+   662	
+   663	      
+   664	
+   665	      
+   666	
+   667	      {/* TAB: CHAT */}
+   668	      {groupView === 'chat' && (
+   669	        <div className="flex-1 bg-brand-card rounded-xl border border-brand-border flex flex-col min-h-[400px]">
+   670	          <div className="p-4 border-b border-brand-border flex items-center bg-brand-dark rounded-t-xl">
+   671	            <MessageSquare className="w-5 h-5 text-purple-400 mr-2" />
+   672	            <h3 className="font-bold text-slate-200">Group {group.code} Chat</h3>
+   673	          </div>
+   674	          
+   675	          <div className="flex-1 p-4 overflow-y-auto space-y-4 max-h-[500px]">
+   676	            {(!group.messages || group.messages.length === 0) ? (

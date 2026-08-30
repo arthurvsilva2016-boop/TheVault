@@ -1,0 +1,31 @@
+--- src/components/game/VoxelWorld.ts
++++ src/components/game/VoxelWorld.ts
+@@ -21,6 +21,22 @@
+     this.listeners = new Set();
+     this.fallingQueue = [];
+   }
++
++  serialize(): Record<string, string> {
++    const data: Record<string, string> = {};
++    for (const [key, chunk] of this.chunks.entries()) {
++      let bstr = '';
++      for(let i=0; i<chunk.length; i++) bstr += String.fromCharCode(chunk[i]);
++      data[key] = btoa(bstr);
++    }
++    return data;
++  }
++
++  deserialize(data: Record<string, string>) {
++    this.chunks.clear();
++    for (const [key, b64] of Object.entries(data)) {
++      const bstr = atob(b64);
++      const chunk = new Uint8Array(bstr.length);
++      for(let i=0; i<bstr.length; i++) chunk[i] = bstr.charCodeAt(i);
++      this.chunks.set(key, chunk);
++      this.chunkVersions.set(key, (this.chunkVersions.get(key) || 0) + 1);
++      this.notify(key);
++    }
++  }
+ 
+   addListener(listener: Listener) {
+     this.listeners.add(listener);

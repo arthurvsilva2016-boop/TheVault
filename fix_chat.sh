@@ -1,0 +1,1 @@
+perl -0777 -pi -e 's/import \{ useLiveCall \} from "..\/context\/LiveCallContext";/import { doc, onSnapshot } from "firebase\/firestore";\nimport { db } from "..\/firebase";\nimport { useLiveCall } from "..\/context\/LiveCallContext";/s' src/components/Chat.tsx

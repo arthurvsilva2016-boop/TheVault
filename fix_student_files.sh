@@ -1,0 +1,1 @@
+perl -0777 -pi -e 's/    Array.from\(files\).forEach\(file => \{/    Array.from(files).forEach(file => {\n      if (file.size > 800 * 1024) {\n        alert(`File ${file.name} is too large (max 800KB). Please use a smaller file.`);\n        return;\n      }/g' src/components/StudentApp.tsx

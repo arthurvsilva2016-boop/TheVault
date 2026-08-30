@@ -1,0 +1,50 @@
+--- src/components/game/World.tsx
++++ src/components/game/World.tsx
+@@ -107,6 +107,31 @@
+   return <>{meshes}</>;
+ });
+ 
++const Lighting = () => {
++  const lightRef = useRef<THREE.DirectionalLight>(null);
++  const [sunPos, setSunPos] = useState(new THREE.Vector3(100, 20, 100));
++  const { camera } = useThree();
++  
++  useFrame((state) => {
++     const t = state.clock.getElapsedTime() * 0.1;
++     const x = Math.cos(t) * 100;
++     const y = Math.sin(t) * 100;
++     const z = Math.cos(t) * 30;
++     
++     if (lightRef.current) {
++        lightRef.current.position.set(camera.position.x + x, y, camera.position.z + z);
++     }
++     setSunPos(new THREE.Vector3(x, y, z));
++  });
++  
++  const intensity = Math.max(0, sunPos.y > 0 ? (sunPos.y / 100) * 1.5 : 0);
++  return (
++    <>
++      <Sky sunPosition={sunPos} />
++      <ambientLight intensity={Math.max(0.1, intensity * 0.5)} />
++      <directionalLight ref={lightRef} intensity={intensity} castShadow shadow-mapSize={[2048, 2048]} shadow-camera-left={-30} shadow-camera-right={30} shadow-camera-top={30} shadow-camera-bottom={-30} shadow-camera-near={0.5} shadow-camera-far={200} />
++      <pointLight position={camera.position} intensity={0.5} distance={15} decay={2} />
++    </>
++  );
++}
++
+ export default function World({ student, isTeacher }: { student: any, isTeacher: boolean }) {
+   const [height, setHeight] = useState(1.8);
+   const [selectedBlock, setSelectedBlock] = useState(1);
+@@ -192,10 +217,8 @@
+     <div className="w-full h-[calc(100vh-8rem)] relative bg-slate-950 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
+ 
+       <Canvas shadows camera={{ fov: 75 }}>
+-        <fog attach="fog" args={['#87CEEB', 5, 30]} />
+-        <Sky sunPosition={[100, 20, 100]} />
+-        <ambientLight intensity={0.5} />
+-        <directionalLight position={[100, 100, 50]} intensity={1.5} castShadow shadow-mapSize={[2048, 2048]} />
++        <fog attach="fog" args={['#87CEEB', 10, 50]} />
++        <Lighting />
+         
+         <ChunkManager />
+         <Player world={world} height={height} />

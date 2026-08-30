@@ -1,0 +1,1 @@
+perl -0777 -pi -e 's/  startCall: \(params: StartCallParams\) => Promise<void>;/  startCall: \(roomCode: string, hostUser: \{ id: string; name: string; role: string; avatarUrl\?: string \}, title: string, type\?: CallType\) => Promise<void>;/s' src/context/LiveCallContext.tsx

@@ -1,0 +1,27 @@
+--- src/components/game/ChunkMesh.tsx
++++ src/components/game/ChunkMesh.tsx
+@@ -9,7 +9,23 @@
+ const dummy = new THREE.Object3D();
+ const color = new THREE.Color();
+ const geometry = new THREE.BoxGeometry(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+-const material = new THREE.MeshLambertMaterial({ vertexColors: true });
++
++// Generate a 5x5 texture overlay
++const canvas = document.createElement('canvas');
++canvas.width = 5;
++canvas.height = 5;
++const ctx = canvas.getContext('2d')!;
++for(let x=0; x<5; x++) {
++  for(let y=0; y<5; y++) {
++     const v = 200 + Math.random() * 55; // light gray to white
++     ctx.fillStyle = `rgb(${v},${v},${v})`;
++     ctx.fillRect(x,y,1,1);
++  }
++}
++const texture = new THREE.CanvasTexture(canvas);
++texture.magFilter = THREE.NearestFilter;
++
++const material = new THREE.MeshStandardMaterial({ vertexColors: true, map: texture });
+ 
+ export function ChunkMesh({ cx, cy, cz, world }: ChunkMeshProps) {
+   const meshRef = useRef<THREE.InstancedMesh>(null);

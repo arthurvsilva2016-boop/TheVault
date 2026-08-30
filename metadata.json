@@ -1,0 +1,6 @@
+{
+  "name": "Vault",
+  "description": "Comprehensive school management and academic delivery platform featuring curriculum collections, group-specific slideshow customization with pedagogical approval workflows, interactive classroom whiteboards, student directories, occurrences tracking, and task delegation.",
+  "requestFramePermissions": ["camera", "microphone", "display-capture"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

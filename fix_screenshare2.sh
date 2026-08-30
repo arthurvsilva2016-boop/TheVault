@@ -1,0 +1,1 @@
+perl -0777 -pi -e 's/  toggleScreenShare: \(\) => Promise<void>;/  toggleScreenShare: () => Promise<void>;\n  approveScreenShare: (participantId: string) => void;\n  denyScreenShare: () => void;/s' src/context/LiveCallContext.tsx
