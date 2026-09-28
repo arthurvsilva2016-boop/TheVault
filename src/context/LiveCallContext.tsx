@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useWebRTC } from '../hooks/useWebRTC';
 import { LiveCallSession, CallParticipant, CallType, Employee, Student } from '../types';
 
 interface StartCallParams {
@@ -22,6 +23,7 @@ interface StartCallParams {
 interface LiveCallContextType {
   activeCall: LiveCallSession | null;
   localStream: MediaStream | null;
+  remoteStreams: Record<string, MediaStream>;
   screenStream: MediaStream | null;
   isMicMuted: boolean;
   isVideoMuted: boolean;
@@ -33,6 +35,7 @@ interface LiveCallContextType {
   audioLevel: number;
   hasMediaPermissions: boolean;
   mediaError: string | null;
+  networkQuality: 'good' | 'poor';
   // Actions
   startCall: (roomCode: string, hostUser: { id: string; name: string; role: string; avatarUrl?: string }, title: string, type?: CallType) => Promise<void>;
   joinCall: (roomCode: string, user: { id: string; name: string; role: string; avatarUrl?: string }, callTitle?: string, type?: CallType) => Promise<void>;
@@ -47,10 +50,12 @@ interface LiveCallContextType {
   setIsWhiteboardActive: (active: boolean) => void;
   setIsChatDrawerOpen: (open: boolean) => void;
   sendCallMessage: (text: string, sender: { id: string; name: string }) => void;
+  broadcastLiveCaption: (caption: { speakerId: string; speakerName: string; originalText: string; sourceLang?: string }) => void;
   updatePresentationSlide: (index: number) => void;
   updatePresentationDeck: (deckSource: 'custom' | 'curriculum', deckId?: string, unitNumber?: number) => void;
   muteAllStudents: () => void;
   toggleParticipantAudio: (participantId: string) => void;
+  removeParticipant: (participantId: string) => void;
   ringParticipant: (name: string) => void;
   incomingCall: { roomCode: string; callerName: string; title: string; type: CallType } | null;
   acceptIncomingCall: (user: { id: string; name: string; role: string; avatarUrl?: string }) => void;
@@ -67,27 +72,53 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
   currentEmployee,
   currentStudent
 }) => {
-  const [activeCall, setActiveCall] = useState<LiveCallSession | null>(() => {
+  const [activeCall, setActiveCall] = useState<LiveCallSession | null>(null);
+
+  // EMERGENCY KILL SWITCH: Triggers when the app is reloaded
+  useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_ACTIVE_CALL);
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
+      if (saved) {
+         console.warn("Emergency Kill Switch: Cleaning up stale call after reload.");
+         localStorage.removeItem(STORAGE_KEY_ACTIVE_CALL);
+         const parsed = JSON.parse(saved);
+         if (parsed && parsed.roomCode) {
+            import('firebase/firestore').then(({ doc, getDoc, setDoc }) => {
+               getDoc(doc(db, 'live_calls', parsed.roomCode)).then(snap => {
+                  if (snap.exists()) {
+                     const callData = snap.data();
+                     // Attempt to remove ghost participants with our user ID
+                     const myUserId = currentEmployee?.id || currentStudent?.id || 'guest';
+                     const filtered = callData.participants.filter(p => p.userId !== myUserId);
+                     if (filtered.length !== callData.participants.length) {
+                         setDoc(doc(db, 'live_calls', parsed.roomCode), { ...callData, participants: filtered }, { merge: true });
+                     }
+                  }
+               });
+            }).catch(() => {});
+         }
+      }
+    } catch (err) {
+      console.error(err);
     }
-  });
+  }, [currentEmployee?.id, currentStudent?.id]);
 
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [localStream,
+setLocalStream] = useState<MediaStream | null>(null);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isHandRaised, setIsHandRaised] = useState(false);
   const [isCallMinimized, setIsCallMinimized] = useState(false);
+  const localParticipantIdRef = useRef<string>(`part-${Math.random().toString(36).substr(2, 9)}`);
   const [isWhiteboardActive, setIsWhiteboardActive] = useState(false);
   const [isChatDrawerOpen, setIsChatDrawerOpen] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [hasMediaPermissions, setHasMediaPermissions] = useState(true);
   const [mediaError, setMediaError] = useState<string | null>(null);
+
+  const { remoteStreams, connectToPeer, networkQuality, replaceVideoTrack } = useWebRTC(activeCall?.roomCode || "", localParticipantIdRef.current, localStream);
 
   // Incoming Call State
   const [incomingCall, setIncomingCall] = useState<{ roomCode: string; callerName: string; title: string; type: CallType } | null>(null);
@@ -95,6 +126,42 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
+
+
+  useEffect(() => {
+    if (!activeCall && localStream) {
+       cleanupMedia();
+    }
+  }, [activeCall]);
+
+
+  useEffect(() => {
+    if (activeCall && localStream) {
+      const me = activeCall.participants.find(p => p.id === localParticipantIdRef.current);
+      if (me) {
+        if (me.isAudioOn !== !isMicMuted) {
+           setIsMicMuted(!me.isAudioOn);
+           localStream.getAudioTracks().forEach(track => track.enabled = me.isAudioOn);
+        }
+        if (me.isVideoOn !== !isVideoMuted) {
+           setIsVideoMuted(!me.isVideoOn);
+           localStream.getVideoTracks().forEach(track => track.enabled = me.isVideoOn);
+        }
+      }
+    }
+  }, [activeCall, localStream, isMicMuted, isVideoMuted]);
+
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+       if (activeCall) {
+          localStorage.removeItem(STORAGE_KEY_ACTIVE_CALL);
+          // Attempting synchronous cleanup might not work perfectly, but we remove the local state
+       }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [activeCall]);
 
   // Broadcast / Listen for multi-tab live sync
   useEffect(() => {
@@ -135,10 +202,16 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
         const remoteCall = docSnap.data() as LiveCallSession;
         
         setActiveCall((prev) => {
+          const myLocalUserId = localParticipantIdRef.current;
+          // Connect to new peers
+          remoteCall.participants.forEach(p => {
+             if (p.id !== myLocalUserId && (!prev || !prev.participants.find(oldP => oldP.id === p.id))) {
+                 connectToPeer(p.id);
+             }
+          });
           if (!prev) return remoteCall;
           
           const localP = prev.participants.find(p => p.isLocal);
-          const myLocalUserId = localP?.id || currentEmployee?.id || currentStudent?.id || 'guest';
           
           const iAmInCall = remoteCall.participants.find(p => p.id === myLocalUserId);
           
@@ -150,7 +223,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
           // Preserve local states for our participant
           const updatedParticipants = remoteCall.participants.map(p => {
             if (p.id === myLocalUserId) {
-              return { ...p, isLocal: true, isAudioOn: localP?.isAudioOn ?? p.isAudioOn, isVideoOn: localP?.isVideoOn ?? p.isVideoOn };
+              return { ...p, isLocal: true, isAudioOn: p.isAudioOn, isVideoOn: p.isVideoOn };
             }
             return { ...p, isLocal: false };
           });
@@ -158,6 +231,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
         });
       } else {
         setActiveCall(null);
+        localStorage.removeItem(STORAGE_KEY_ACTIVE_CALL);
       }
     });
     return () => unsub();
@@ -274,7 +348,9 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
     await initLocalMedia();
 
     const hostParticipant: CallParticipant = {
-      id: hostUser.id,
+      id: localParticipantIdRef.current,
+      userId: hostUser.id,
+      deviceId: localParticipantIdRef.current,
       name: hostUser.name,
       role: hostUser.role,
       avatarUrl: hostUser.avatarUrl,
@@ -349,7 +425,9 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
     }
 
     const localParticipant: CallParticipant = {
-      id: user.id,
+      id: localParticipantIdRef.current,
+      userId: user.id,
+      deviceId: localParticipantIdRef.current,
       name: user.name,
       role: user.role,
       avatarUrl: user.avatarUrl,
@@ -363,7 +441,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
     };
 
     if (existingCall) {
-      const otherParticipants = existingCall.participants.filter(p => p.id !== user.id).map(p => ({ ...p, isLocal: false }));
+      const otherParticipants = existingCall.participants.filter(p => p.id !== localParticipantIdRef.current).map(p => ({ ...p, isLocal: false }));
       const updated: LiveCallSession = {
         ...existingCall,
         participants: [...otherParticipants, localParticipant],
@@ -386,7 +464,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
         title: callTitle || `Room: ${roomCode}`,
         roomCode,
         type,
-        hostId: user.id,
+        hostId: localParticipantIdRef.current,
         hostName: user.name,
         startedAt: new Date().toISOString(),
         participants: [localParticipant],
@@ -509,6 +587,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
       if (screenStream) {
         screenStream.getTracks().forEach(track => track.stop());
         setScreenStream(null);
+        replaceVideoTrack(null);
       }
       setIsScreenSharing(false);
       if (activeCall) {
@@ -538,10 +617,12 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
           });
           setScreenStream(stream);
           setIsScreenSharing(true);
+          replaceVideoTrack(stream.getVideoTracks()[0]);
 
           stream.getVideoTracks()[0].onended = () => {
             setIsScreenSharing(false);
             setScreenStream(null);
+            replaceVideoTrack(null);
             if (activeCall) {
               saveCallState({
                 ...activeCall,
@@ -591,6 +672,27 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
     saveCallState({
       ...activeCall,
       messages: [...activeCall.messages, newMsg]
+    });
+  };
+
+  // BROADCAST LIVE CAPTION TO ROOM (SHARED WITH ALL PARTICIPANTS)
+  const broadcastLiveCaption = (caption: { speakerId: string; speakerName: string; originalText: string; sourceLang?: string }) => {
+    if (!activeCall || !caption.originalText.trim()) return;
+    const cleanText = caption.originalText.trim();
+    const newCap = {
+      id: `cap-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      speakerId: caption.speakerId,
+      speakerName: caption.speakerName,
+      originalText: cleanText,
+      sourceLang: caption.sourceLang || 'en',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    };
+    const prevCaptions = activeCall.liveCaptions || [];
+    // Keep a generous buffer of up to 300 meeting captions so the entire conversation is documented
+    const updatedCaptions = [...prevCaptions.slice(-299), newCap];
+    saveCallState({
+      ...activeCall,
+      liveCaptions: updatedCaptions
     });
   };
 
@@ -652,6 +754,13 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
     saveCallState({ ...activeCall, participants: updated });
   };
 
+
+  const removeParticipant = (participantId: string) => {
+    if (!activeCall) return;
+    const updated = activeCall.participants.filter(p => p.id !== participantId);
+    saveCallState({ ...activeCall, participants: updated });
+  };
+
   // RING PARTICIPANT
   const ringParticipant = (name: string) => {
     if (!activeCall) return;
@@ -686,6 +795,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
       value={{
         activeCall,
         localStream,
+        remoteStreams,
         screenStream,
         isMicMuted,
         isVideoMuted,
@@ -697,6 +807,7 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
         audioLevel,
         hasMediaPermissions,
         mediaError,
+        networkQuality,
         startCall,
         joinCall,
         leaveCall,
@@ -710,10 +821,12 @@ export const LiveCallProvider: React.FC<{ children: React.ReactNode; currentEmpl
         setIsWhiteboardActive,
         setIsChatDrawerOpen,
         sendCallMessage,
+        broadcastLiveCaption,
         updatePresentationSlide,
         updatePresentationDeck,
         muteAllStudents,
         toggleParticipantAudio,
+        removeParticipant,
         ringParticipant,
         incomingCall,
         acceptIncomingCall,

@@ -36,6 +36,7 @@ interface PreferencesProps {
     meetings?: Meeting[];
     tasks?: import('../types').Task[];
     employeeMessages?: import('../types').EmployeeChatMessage[];
+    chatChannels?: import('../types').ChatChannel[];
     rolePresets?: import('../types').RolePreset[];
   };
   onRestoreSystemData?: (data: any) => void;

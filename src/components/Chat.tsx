@@ -1,4 +1,4 @@
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot, deleteDoc } from "firebase/firestore";
 import { db } from "../firebase";
 import { useLiveCall } from "../context/LiveCallContext";
 import React, { useState, useRef, useEffect } from 'react';
@@ -39,61 +39,40 @@ import {
   Palette,
   Columns,
   CheckCircle,
-  ArrowLeft
+  ArrowLeft,
+  Plus,
+  Edit2,
+  Settings
 } from 'lucide-react';
 import { isSuperAdmin } from '../utils/roles';
 import { useLanguage } from '../context/LanguageContext';
 import VirtualWhiteboard from './VirtualWhiteboard';
+import { ChatChannel } from '../types';
+import { DEFAULT_CHAT_CHANNELS } from '../data';
+import { 
+  CreateChannelModal, 
+  EditChannelModal, 
+  DeleteChannelModal, 
+  ClearDmModal, 
+  CHANNEL_ICON_MAP,
+  CHANNEL_CATEGORIES 
+} from './ChannelModals';
 
 interface ChatProps {
   activeEmployee: Employee;
   employees: Employee[];
   messages: EmployeeChatMessage[];
+  channels?: ChatChannel[];
   onSendMessage: (msg: EmployeeChatMessage) => void;
   onDeleteMessage?: (id: string) => void;
   onToggleReaction?: (messageId: string, emoji: string) => void;
   onTogglePin?: (messageId: string) => void;
   onMarkMessageRead?: (messageId: string, readerId: string) => void;
+  onAddChannel?: (channel: ChatChannel) => void;
+  onUpdateChannel?: (channel: ChatChannel) => void;
+  onDeleteChannel?: (channelId: string, deleteMessages?: boolean) => void;
+  onClearDmMessages?: (dmChannelId: string) => void;
 }
-
-interface DefaultChannel {
-  id: string;
-  name: string;
-  description: string;
-  icon: any;
-  category: 'general' | 'department';
-}
-
-const DEFAULT_CHANNELS: DefaultChannel[] = [
-  { 
-    id: 'general', 
-    name: 'general-staff', 
-    description: 'School-wide announcements, team chat and daily coordination', 
-    icon: Hash,
-    category: 'general'
-  },
-  { 
-    id: 'teachers', 
-    name: 'teachers-lounge', 
-    description: 'Pedagogical strategies, lesson planning and academic discussions', 
-    icon: BookOpen,
-    category: 'department'
-  },
-  { 
-    id: 'announcements', 
-    name: 'official-notices', 
-    description: 'Important executive and institutional announcements', 
-    icon: Megaphone,
-    category: 'general'
-  },
-  { 
-    id: 'operations', 
-    name: 'operations-admin', 
-    description: 'Administrative, financial and front-desk logistics', 
-    icon: Briefcase,
-    category: 'department'
-  }
-];
 
 const EMOJI_OPTIONS = ['👍', '❤️', '👏', '🎉', '🔥', '🚀', '✅', '😂', '💡', '🙏'];
 
@@ -101,20 +80,39 @@ export default function Chat({
   activeEmployee,
   employees,
   messages,
+  channels,
   onSendMessage,
   onDeleteMessage,
   onToggleReaction,
   onTogglePin,
-  onMarkMessageRead
+  onMarkMessageRead,
+  onAddChannel,
+  onUpdateChannel,
+  onDeleteChannel,
+  onClearDmMessages
 }: ChatProps) {
   const { t } = useLanguage();
   const { startCall, joinCall, activeCall, setIsCallMinimized } = useLiveCall();
 
+  const [localChannels, setLocalChannels] = useState<ChatChannel[]>(DEFAULT_CHAT_CHANNELS);
+  const currentChannels = (channels && channels.length > 0) ? channels : localChannels;
+
   const [activeChannelId, setActiveChannelId] = useState<string>('general');
   const [activeDmEmployee, setActiveDmEmployee] = useState<Employee | null>(null);
 
+  // Modals state
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [channelToEdit, setChannelToEdit] = useState<ChatChannel | null>(null);
+  const [channelToDelete, setChannelToDelete] = useState<ChatChannel | null>(null);
+  const [isClearDmOpen, setIsClearDmOpen] = useState(false);
+  const [activeChannelMenuId, setActiveChannelMenuId] = useState<string | null>(null);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('all');
+
+  const currentChannelInfo = currentChannels.find(c => c.id === activeChannelId);
+
   const currentCallId = activeDmEmployee ? `vault-room-dm-${[activeEmployee.id, activeDmEmployee.id].sort().join('-')}` : `vault-room-channel-${activeChannelId}`;
-  const currentCallTitle = activeDmEmployee ? `Call with ${activeDmEmployee.name}` : `Channel: ${DEFAULT_CHANNELS.find(c => c.id === activeChannelId)?.name || activeChannelId}`;
+  const currentCallTitle = activeDmEmployee ? `Call with ${activeDmEmployee.name}` : `Channel: ${currentChannelInfo?.name || activeChannelId}`;
 
   const [ongoingCall, setOngoingCall] = useState<any>(null);
 
@@ -198,12 +196,13 @@ export default function Chat({
   };
 
   // Switch to standard channel
-  const handleSelectChannel = (channel: DefaultChannel) => {
+  const handleSelectChannel = (channel: ChatChannel) => {
     setActiveChannelId(channel.id);
     setActiveDmEmployee(null);
     setReplyingTo(null);
     setShowPinnedDrawer(false);
     setMobileView('thread');
+    setActiveChannelMenuId(null);
   };
 
   // Switch to Direct Message
@@ -214,6 +213,65 @@ export default function Chat({
     setReplyingTo(null);
     setShowPinnedDrawer(false);
     setMobileView('thread');
+    setActiveChannelMenuId(null);
+  };
+
+  // Channel CRUD callbacks
+  const handleCreateChannel = (newChannel: ChatChannel, initialMsg?: string) => {
+    if (onAddChannel) {
+      onAddChannel(newChannel);
+    } else {
+      setLocalChannels(prev => [...prev, newChannel]);
+    }
+
+    if (initialMsg) {
+      const welcomeMessage: EmployeeChatMessage = {
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        senderId: activeEmployee.id,
+        senderName: activeEmployee.name || activeEmployee.username,
+        senderRole: activeEmployee.roleTitle || (activeEmployee.isAssociate ? 'Superadmin' : 'Staff'),
+        senderAvatar: activeEmployee.avatarUrl,
+        isAssociate: isSuperAdmin(activeEmployee),
+        channelId: newChannel.id,
+        text: initialMsg,
+        timestamp: new Date().toISOString(),
+        reactions: []
+      };
+      onSendMessage(welcomeMessage);
+    }
+
+    setActiveChannelId(newChannel.id);
+    setActiveDmEmployee(null);
+    setMobileView('thread');
+  };
+
+  const handleUpdateChannelInfo = (updatedChannel: ChatChannel) => {
+    if (onUpdateChannel) {
+      onUpdateChannel(updatedChannel);
+    } else {
+      setLocalChannels(prev => prev.map(c => c.id === updatedChannel.id ? updatedChannel : c));
+    }
+  };
+
+  const handleDeleteChannelConfirm = (channelId: string, deleteMessages: boolean) => {
+    if (onDeleteChannel) {
+      onDeleteChannel(channelId, deleteMessages);
+    } else {
+      setLocalChannels(prev => prev.filter(c => c.id !== channelId));
+    }
+
+    if (activeChannelId === channelId) {
+      const remaining = currentChannels.filter(c => c.id !== channelId);
+      const nextId = remaining[0]?.id || 'general';
+      setActiveChannelId(nextId);
+      setActiveDmEmployee(null);
+    }
+  };
+
+  const handleClearDmConfirm = (dmChannelId: string) => {
+    if (onClearDmMessages) {
+      onClearDmMessages(dmChannelId);
+    }
   };
 
   // Filter messages for current view
@@ -429,8 +487,6 @@ export default function Chat({
     }
   });
 
-  const currentChannelInfo = DEFAULT_CHANNELS.find(c => c.id === activeChannelId);
-
   const filteredEmployees = employees.filter(e => 
     e.id !== activeEmployee.id &&
     (e.name.toLowerCase().includes(sidebarSearch.toLowerCase()) || 
@@ -501,38 +557,157 @@ export default function Chat({
         <div className="flex-1 overflow-y-auto p-3 space-y-6 custom-scrollbar">
           {/* TEAM CHANNELS */}
           <div>
-            <div className="flex items-center justify-between px-2 mb-1.5">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Team Channels</span>
-              <span className="text-[10px] text-slate-500 font-medium">{DEFAULT_CHANNELS.length}</span>
+            <div className="flex items-center justify-between px-2 mb-2">
+              <div className="flex items-center space-x-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Team Channels</span>
+                <span className="px-1.5 py-0.2 rounded-full bg-slate-800 text-[10px] text-slate-400 font-medium">
+                  {currentChannels.length}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(true)}
+                className="px-2 py-1 bg-purple-600/20 hover:bg-purple-600 text-purple-300 hover:text-white border border-purple-500/30 rounded-lg text-[10px] font-bold flex items-center space-x-1 transition cursor-pointer"
+                title="Create New Channel or Direct Message"
+              >
+                <Plus className="w-3 h-3" />
+                <span>New</span>
+              </button>
             </div>
-            <div className="space-y-0.5">
-              {DEFAULT_CHANNELS.map(channel => {
-                const isActive = !activeDmEmployee && activeChannelId === channel.id;
-                const IconComponent = channel.icon;
-                const unreadForChannel = messages.filter(m => m.channelId === channel.id && m.senderId !== activeEmployee.id).length;
 
-                return (
-                  <button
-                    key={channel.id}
-                    onClick={() => handleSelectChannel(channel)}
-                    className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs font-medium transition cursor-pointer text-left group ${
-                      isActive 
-                        ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30' 
-                        : 'text-slate-300 hover:bg-white/5 hover:text-white border border-transparent'
-                    }`}
-                  >
-                    <div className="flex items-center space-x-2 truncate">
-                      <IconComponent className={`w-4 h-4 shrink-0 ${isActive ? 'text-purple-400' : 'text-slate-400 group-hover:text-slate-200'}`} />
-                      <span className="truncate">{channel.name}</span>
+            {/* Category Filter Pills (if more than 3 channels) */}
+            {currentChannels.length > 3 && (
+              <div className="flex items-center gap-1 overflow-x-auto pb-2 px-1 custom-scrollbar text-[10px]">
+                <button
+                  type="button"
+                  onClick={() => setSelectedCategoryFilter('all')}
+                  className={`px-2 py-0.5 rounded-md font-medium shrink-0 transition cursor-pointer ${
+                    selectedCategoryFilter === 'all'
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-brand-card text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  All
+                </button>
+                {CHANNEL_CATEGORIES.map(cat => {
+                  const count = currentChannels.filter(c => c.category === cat.id).length;
+                  if (count === 0) return null;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setSelectedCategoryFilter(cat.id)}
+                      className={`px-2 py-0.5 rounded-md font-medium shrink-0 transition cursor-pointer ${
+                        selectedCategoryFilter === cat.id
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-brand-card text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {cat.label} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Channels List */}
+            <div className="space-y-0.5">
+              {currentChannels
+                .filter(c => selectedCategoryFilter === 'all' || c.category === selectedCategoryFilter)
+                .filter(c => !sidebarSearch.trim() || c.name.toLowerCase().includes(sidebarSearch.toLowerCase()) || (c.description && c.description.toLowerCase().includes(sidebarSearch.toLowerCase())))
+                .map(channel => {
+                  const isActive = !activeDmEmployee && activeChannelId === channel.id;
+                  const IconComp = CHANNEL_ICON_MAP[channel.icon || 'Hash'] || Hash;
+                  const channelMessages = messages.filter(m => m.channelId === channel.id);
+                  const unreadForChannel = channelMessages.filter(m => m.senderId !== activeEmployee.id && (!m.readBy || !m.readBy.includes(activeEmployee.id))).length;
+
+                  return (
+                    <div
+                      key={channel.id}
+                      className={`group relative flex items-center justify-between rounded-xl px-2.5 py-1.5 text-xs font-medium transition ${
+                        isActive 
+                          ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40 shadow-sm' 
+                          : 'text-slate-300 hover:bg-white/5 hover:text-white border border-transparent'
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleSelectChannel(channel)}
+                        className="flex-1 flex items-center space-x-2 truncate cursor-pointer text-left py-0.5 min-w-0"
+                      >
+                        <IconComp className={`w-4 h-4 shrink-0 ${isActive ? 'text-purple-400' : 'text-slate-400 group-hover:text-slate-200'}`} />
+                        <span className="truncate">{channel.name}</span>
+                        {channel.isPrivate && (
+                          <span title="Private Channel" className="inline-flex shrink-0">
+                            <Lock className="w-3 h-3 text-amber-400" />
+                          </span>
+                        )}
+                      </button>
+
+                      {/* Right-side Badges & Actions */}
+                      <div className="flex items-center space-x-1 shrink-0">
+                        {unreadForChannel > 0 && (
+                          <span className="px-1.5 py-0.2 rounded-full bg-purple-600 text-white text-[9px] font-bold animate-pulse">
+                            {unreadForChannel}
+                          </span>
+                        )}
+
+                        {/* Quick Edit/Delete Dropdown trigger */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setActiveChannelMenuId(activeChannelMenuId === channel.id ? null : channel.id);
+                            }}
+                            className={`p-1 rounded-lg transition cursor-pointer ${
+                              activeChannelMenuId === channel.id 
+                                ? 'bg-purple-600/40 text-white' 
+                                : 'opacity-0 group-hover:opacity-100 text-slate-400 hover:text-white hover:bg-white/10'
+                            }`}
+                            title="Channel Settings"
+                          >
+                            <MoreVertical className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Channel Action Dropdown Popup */}
+                          {activeChannelMenuId === channel.id && (
+                            <div 
+                              className="absolute right-0 top-full mt-1 w-44 bg-slate-900 border border-brand-border rounded-xl shadow-2xl z-50 py-1.5 animate-fadeIn"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div className="px-3 py-1 border-b border-brand-border/60 text-[10px] text-slate-400 font-mono font-bold truncate">
+                                #{channel.name}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveChannelMenuId(null);
+                                  setChannelToEdit(channel);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-xs text-slate-200 hover:bg-purple-600/20 hover:text-purple-300 flex items-center space-x-2 transition cursor-pointer"
+                              >
+                                <Edit2 className="w-3.5 h-3.5 text-purple-400" />
+                                <span>Edit Channel Name</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveChannelMenuId(null);
+                                  setChannelToDelete(channel);
+                                }}
+                                className="w-full px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/20 flex items-center space-x-2 transition cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                                <span>Delete Channel</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    {channel.id === 'announcements' && (
-                      <span className="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 text-[9px] font-bold uppercase">
-                        Notice
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
+                  );
+                })}
             </div>
           </div>
 
@@ -662,13 +837,26 @@ export default function Chat({
               </>
             ) : (
               <>
-                <div className="w-9 h-9 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400">
-                  <Hash className="w-5 h-5" />
+                <div className="w-9 h-9 rounded-xl bg-purple-500/15 border border-purple-500/30 flex items-center justify-center text-purple-400 shrink-0">
+                  {(() => {
+                    const IconComp = CHANNEL_ICON_MAP[currentChannelInfo?.icon || 'Hash'] || Hash;
+                    return <IconComp className="w-5 h-5" />;
+                  })()}
                 </div>
-                <div className="truncate">
+                <div className="truncate min-w-0">
                   <div className="flex items-center space-x-2">
-                    <h3 className="font-bold text-slate-100 text-sm">#{currentChannelInfo?.name || activeChannelId}</h3>
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/5 border border-white/10 text-slate-300">
+                    <h3 className="font-bold text-slate-100 text-sm truncate">#{currentChannelInfo?.name || activeChannelId}</h3>
+                    {currentChannelInfo && (
+                      <button
+                        type="button"
+                        onClick={() => setChannelToEdit(currentChannelInfo)}
+                        className="p-1 text-slate-400 hover:text-purple-300 hover:bg-purple-600/20 rounded-md transition cursor-pointer"
+                        title="Edit Channel Name & Details"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/5 border border-white/10 text-slate-300 shrink-0">
                       {currentChannelMessages.length} messages
                     </span>
                   </div>
@@ -681,30 +869,48 @@ export default function Chat({
           {/* Header Action Tools */}
           <div className="flex items-center space-x-2">
             {ongoingCall ? (
-              activeCall?.roomCode === currentCallId ? (
-                <button
-                  onClick={() => setIsCallMinimized(false)}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 rounded-lg flex items-center space-x-1.5 text-xs font-semibold transition cursor-pointer"
-                >
-                  <Video className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">In Call</span>
-                </button>
-              ) : (
-                <button
-                  onClick={() => {
-                    joinCall(
-                      currentCallId,
-                      { id: activeEmployee.id, name: activeEmployee.name, role: activeEmployee.roleTitle, avatarUrl: activeEmployee.avatarUrl },
-                      currentCallTitle,
-                      'meeting'
-                    );
-                  }}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 rounded-lg flex items-center space-x-1.5 text-xs font-semibold transition cursor-pointer shadow-lg shadow-emerald-900/50 animate-pulse"
-                >
-                  <Video className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Join Ongoing Call ({ongoingCall.participants?.length || 0})</span>
-                </button>
-              )
+              <div className="flex items-center space-x-2">
+                {activeCall?.roomCode === currentCallId ? (
+                  <button
+                    onClick={() => setIsCallMinimized(false)}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 rounded-lg flex items-center space-x-1.5 text-xs font-semibold transition cursor-pointer"
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">In Call</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => {
+                      joinCall(
+                        currentCallId,
+                        { id: activeEmployee.id, name: activeEmployee.name, role: activeEmployee.roleTitle, avatarUrl: activeEmployee.avatarUrl },
+                        currentCallTitle,
+                        'meeting'
+                      );
+                    }}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500 rounded-lg flex items-center space-x-1.5 text-xs font-semibold transition cursor-pointer shadow-lg shadow-emerald-900/50 animate-pulse"
+                  >
+                    <Video className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Join Ongoing Call ({ongoingCall.participants?.length || 0})</span>
+                  </button>
+                )}
+                
+                {isSuperAdmin(activeEmployee) && (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await deleteDoc(doc(db, 'live_calls', currentCallId));
+                      } catch (err) {
+                        console.error("Failed to end call", err);
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white border border-rose-500 rounded-lg flex items-center space-x-1.5 text-xs font-semibold transition cursor-pointer shadow-lg shadow-rose-900/50"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">End Call</span>
+                  </button>
+                )}
+              </div>
             ) : (
               <button
                 onClick={() => {
@@ -796,6 +1002,75 @@ export default function Chat({
                 <span className="hidden md:inline font-mono">{pinnedMessages.length}</span>
               </button>
             )}
+
+            {/* Header More Actions Menu */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsHeaderMenuOpen(!isHeaderMenuOpen)}
+                className="p-2 rounded-lg bg-brand-dark/80 border border-brand-border text-slate-300 hover:text-white hover:border-slate-600 transition cursor-pointer"
+                title="Chat Options"
+              >
+                <MoreVertical className="w-3.5 h-3.5" />
+              </button>
+
+              {isHeaderMenuOpen && (
+                <div 
+                  className="absolute right-0 top-full mt-1.5 w-52 bg-slate-900 border border-brand-border rounded-xl shadow-2xl z-50 py-1.5 animate-fadeIn"
+                  onClick={() => setIsHeaderMenuOpen(false)}
+                >
+                  {activeDmEmployee ? (
+                    <>
+                      <div className="px-3 py-1.5 border-b border-brand-border/60 text-[11px] text-slate-300 font-bold">
+                        Direct Message Options
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsClearDmOpen(true)}
+                        className="w-full px-3 py-2 text-left text-xs text-amber-300 hover:bg-amber-500/10 flex items-center space-x-2 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Clear DM History</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="px-3 py-1.5 border-b border-brand-border/60 text-[11px] text-slate-300 font-bold truncate">
+                        #{currentChannelInfo?.name || activeChannelId}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (currentChannelInfo) setChannelToEdit(currentChannelInfo);
+                        }}
+                        className="w-full px-3 py-2 text-left text-xs text-slate-200 hover:bg-purple-600/20 hover:text-purple-300 flex items-center space-x-2 transition cursor-pointer"
+                      >
+                        <Edit2 className="w-3.5 h-3.5 text-purple-400" />
+                        <span>Edit Channel Name & Details</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsCreateModalOpen(true)}
+                        className="w-full px-3 py-2 text-left text-xs text-slate-200 hover:bg-purple-600/20 hover:text-purple-300 flex items-center space-x-2 transition cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Create New Channel</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (currentChannelInfo) setChannelToDelete(currentChannelInfo);
+                        }}
+                        className="w-full px-3 py-2 text-left text-xs text-red-300 hover:bg-red-500/20 flex items-center space-x-2 transition cursor-pointer border-t border-brand-border/40 mt-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                        <span>Delete Channel</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -1288,6 +1563,50 @@ export default function Chat({
             </div>
           </div>
         </div>
+      )}
+
+      {/* CHANNEL MANAGEMENT MODALS */}
+      <CreateChannelModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onCreateChannel={handleCreateChannel}
+        onSelectDm={handleSelectDm}
+        existingChannels={currentChannels}
+        employees={employees}
+        activeEmployee={activeEmployee}
+      />
+
+      {channelToEdit && (
+        <EditChannelModal
+          isOpen={!!channelToEdit}
+          channel={channelToEdit}
+          onClose={() => setChannelToEdit(null)}
+          onUpdateChannel={handleUpdateChannelInfo}
+          existingChannels={currentChannels}
+          activeEmployee={activeEmployee}
+          onRequestDelete={(ch) => setChannelToDelete(ch)}
+        />
+      )}
+
+      {channelToDelete && (
+        <DeleteChannelModal
+          isOpen={!!channelToDelete}
+          channel={channelToDelete}
+          messageCount={messages.filter(m => m.channelId === channelToDelete?.id).length}
+          onClose={() => setChannelToDelete(null)}
+          onConfirmDelete={handleDeleteChannelConfirm}
+        />
+      )}
+
+      {activeDmEmployee && (
+        <ClearDmModal
+          isOpen={isClearDmOpen}
+          employee={activeDmEmployee}
+          dmChannelId={activeChannelId}
+          messageCount={currentChannelMessages.length}
+          onClose={() => setIsClearDmOpen(false)}
+          onConfirmClear={handleClearDmConfirm}
+        />
       )}
     </div>
   );

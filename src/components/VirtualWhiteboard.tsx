@@ -34,7 +34,10 @@ import {
   Hand,
   ZoomIn,
   ZoomOut,
-  RotateCcw
+  RotateCcw,
+  PlusCircle,
+  Smile,
+  Magnet
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
@@ -306,12 +309,15 @@ export default function VirtualWhiteboard({
 
   // Modals & UI States
   const [isTemplateModalOpen, setIsTemplateModalOpen] = useState(false);
+  const [isInsertMenuOpen, setIsInsertMenuOpen] = useState(false);
+  const [insertMenuTab, setInsertMenuTab] = useState<'shapes'|'annotations'|'emojis'>('shapes');
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
+  const [isSnapEnabled, setIsSnapEnabled] = useState(false);
   const [currentStroke, setCurrentStroke] = useState<WhiteboardStroke | null>(null);
 
   // Persistent Elements
@@ -330,6 +336,8 @@ export default function VirtualWhiteboard({
 
   // Text insertion state
   const [activeTextInput, setActiveTextInput] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [draggingTextId, setDraggingTextId] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
 
   // Sticky drag state
   const [draggingStickyId, setDraggingStickyId] = useState<string | null>(null);
@@ -505,7 +513,9 @@ export default function VirtualWhiteboard({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     ctx.save();
-    // Apply pan & zoom matrix
+    // Apply High-DPI (Retina) scale and pan & zoom matrix
+    const dpr = window.devicePixelRatio || 1;
+    ctx.scale(dpr, dpr);
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
 
@@ -584,17 +594,8 @@ export default function VirtualWhiteboard({
       ctx.restore();
     });
 
-    // Draw text items directly onto canvas context in world coordinates
-    texts.forEach(t => {
-      ctx.save();
-      ctx.font = `600 ${t.fontSize}px sans-serif`;
-      ctx.fillStyle = t.color;
-      ctx.fillText(t.text, t.x, t.y);
-      ctx.restore();
-    });
-
     ctx.restore();
-  }, [strokes, currentStroke, texts, pan, zoom]);
+  }, [strokes, currentStroke, pan, zoom]);
 
   // Re-draw whenever visual elements change
   useEffect(() => {
@@ -664,8 +665,20 @@ export default function VirtualWhiteboard({
     // Draw background
     drawBackgroundOntoContext(offCtx, offCanvas.width, offCanvas.height);
 
-    // Draw drawn strokes and texts from current canvas
+    // Draw drawn strokes from current canvas
     offCtx.drawImage(canvas, 0, 0);
+
+    // Apply viewport transform for DOM-based elements
+    offCtx.setTransform(zoom, 0, 0, zoom, pan.x, pan.y);
+
+    // Render Texts
+    texts.forEach(t => {
+      offCtx.save();
+      offCtx.font = `600 ${t.fontSize}px sans-serif`;
+      offCtx.fillStyle = t.color;
+      offCtx.fillText(t.text, t.x, t.y);
+      offCtx.restore();
+    });
 
     // Render Sticky Notes onto the exported canvas
     stickies.forEach(s => {
@@ -705,8 +718,10 @@ export default function VirtualWhiteboard({
       offCtx.restore();
     });
 
+    offCtx.resetTransform();
+
     return offCanvas.toDataURL('image/png', 0.95);
-  }, [drawBackgroundOntoContext, stickies]);
+  }, [drawBackgroundOntoContext, stickies, texts, zoom, pan]);
 
   // Capture lightweight compressed preview for Firestore
   const generateCompactPreview = useCallback((): string => {
@@ -727,8 +742,32 @@ export default function VirtualWhiteboard({
     offCtx.fillRect(0, 0, offCanvas.width, offCanvas.height);
     offCtx.drawImage(canvas, 0, 0, previewWidth, previewHeight);
 
+    // Apply scaling and transform for DOM elements
+    offCtx.scale(scale, scale);
+    offCtx.setTransform(scale * zoom, 0, 0, scale * zoom, scale * pan.x, scale * pan.y);
+
+    texts.forEach(t => {
+      offCtx.save();
+      offCtx.font = `600 ${t.fontSize}px sans-serif`;
+      offCtx.fillStyle = t.color;
+      offCtx.fillText(t.text, t.x, t.y);
+      offCtx.restore();
+    });
+
+    stickies.forEach(s => {
+      offCtx.save();
+      offCtx.fillStyle = s.color || '#fef08a';
+      offCtx.fillRect(s.x, s.y, 180, 110);
+      offCtx.fillStyle = '#1c1917';
+      offCtx.font = '12px sans-serif';
+      offCtx.fillText(s.text.substring(0, 20) + (s.text.length > 20 ? '...' : ''), s.x + 8, s.y + 24);
+      offCtx.restore();
+    });
+
+    offCtx.resetTransform();
+
     return offCanvas.toDataURL('image/jpeg', 0.7);
-  }, []);
+  }, [texts, stickies, zoom, pan]);
 
   // -------------------------------------------------------------
   // 3. FIRESTORE PERSISTENCE & AUTO-SAVE
@@ -1087,11 +1126,13 @@ export default function VirtualWhiteboard({
 
   useEffect(() => {
     const updateCanvasSize = () => {
-      if (containerRef.current && canvasRef.current) {
-        const rect = containerRef.current.getBoundingClientRect();
-        if (rect.width > 0 && rect.height > 0) {
-          canvasRef.current.width = rect.width;
-          canvasRef.current.height = rect.height;
+      if (canvasRef.current) {
+        const width = canvasRef.current.offsetWidth;
+        const height = canvasRef.current.offsetHeight;
+        if (width > 0 && height > 0) {
+          const dpr = window.devicePixelRatio || 1;
+          canvasRef.current.width = width * dpr;
+          canvasRef.current.height = height * dpr;
           redrawCanvas();
         }
       }
@@ -1102,8 +1143,8 @@ export default function VirtualWhiteboard({
       updateCanvasSize();
     });
 
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
+    if (canvasRef.current && canvasRef.current.parentElement) {
+      resizeObserver.observe(canvasRef.current.parentElement);
     }
 
     window.addEventListener('resize', updateCanvasSize);
@@ -1116,16 +1157,30 @@ export default function VirtualWhiteboard({
   // -------------------------------------------------------------
   // 8. DRAWING & POINTER HANDLERS (WITH PAN & ZOOM MATH)
   // -------------------------------------------------------------
-  const getCanvasCoords = (e: React.MouseEvent | React.TouchEvent) => {
+  const getCanvasCoords = (e: React.MouseEvent | React.TouchEvent, applySnapping = false) => {
     if (!canvasRef.current) return { x: 0, y: 0, screenX: 0, screenY: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
     const clientX = 'touches' in e ? (e.touches[0]?.clientX ?? 0) : (e as React.MouseEvent).clientX;
     const clientY = 'touches' in e ? (e.touches[0]?.clientY ?? 0) : (e as React.MouseEvent).clientY;
-    const screenX = clientX - rect.left;
-    const screenY = clientY - rect.top;
+    
+    // Un-scale coords if CSS transform is active
+    const scaleX = canvasRef.current.offsetWidth / rect.width;
+    const scaleY = canvasRef.current.offsetHeight / rect.height;
+    
+    const screenX = (clientX - rect.left) * scaleX;
+    const screenY = (clientY - rect.top) * scaleY;
+    
+    let worldX = (screenX - pan.x) / zoom;
+    let worldY = (screenY - pan.y) / zoom;
+    
+    if (applySnapping && isSnapEnabled) {
+      worldX = Math.round(worldX / 20) * 20;
+      worldY = Math.round(worldY / 20) * 20;
+    }
+
     return {
-      x: (screenX - pan.x) / zoom,
-      y: (screenY - pan.y) / zoom,
+      x: worldX,
+      y: worldY,
       screenX,
       screenY
     };
@@ -1148,7 +1203,8 @@ export default function VirtualWhiteboard({
 
     if (selectedTool === 'select') return;
 
-    const coords = getCanvasCoords(e);
+    const shouldSnap = ['rect', 'circle', 'line', 'arrow'].includes(selectedTool);
+    const coords = getCanvasCoords(e, shouldSnap);
 
     if (selectedTool === 'text') {
       setActiveTextInput({ x: coords.x, y: coords.y, text: '' });
@@ -1194,7 +1250,8 @@ export default function VirtualWhiteboard({
     }
 
     if (!isDrawing || !currentStroke) return;
-    const coords = getCanvasCoords(e);
+    const shouldSnap = ['rect', 'circle', 'line', 'arrow'].includes(currentStroke.tool);
+    const coords = getCanvasCoords(e, shouldSnap);
 
     if (currentStroke.tool === 'pen' || currentStroke.tool === 'highlighter' || currentStroke.tool === 'eraser') {
       setCurrentStroke(prev => prev ? {
@@ -1225,21 +1282,33 @@ export default function VirtualWhiteboard({
   };
 
   // Sticky Dragging in world coordinates
+  
   const handleStickyMouseMove = (e: React.MouseEvent) => {
-    if (!draggingStickyId || !containerRef.current) return;
+    if ((!draggingStickyId && !draggingTextId) || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const screenX = e.clientX - rect.left;
-    const screenY = e.clientY - rect.top;
+    
+    const scaleX = containerRef.current.offsetWidth / rect.width;
+    const scaleY = containerRef.current.offsetHeight / rect.height;
+    
+    const screenX = (e.clientX - rect.left) * scaleX;
+    const screenY = (e.clientY - rect.top) * scaleY;
+    
     const worldX = (screenX - pan.x) / zoom - dragOffset.x;
     const worldY = (screenY - pan.y) / zoom - dragOffset.y;
+    
+    const finalX = isSnapEnabled ? Math.round(worldX / 20) * 20 : worldX;
+    const finalY = isSnapEnabled ? Math.round(worldY / 20) * 20 : worldY;
 
-    setStickies(prev => prev.map(s => s.id === draggingStickyId ? { ...s, x: worldX, y: worldY } : s));
+    if (draggingStickyId) {
+       setStickies(prev => prev.map(s => s.id === draggingStickyId ? { ...s, x: finalX, y: finalY } : s));
+    } else if (draggingTextId) {
+       setTexts(prev => prev.map(t => t.id === draggingTextId ? { ...t, x: finalX, y: finalY } : t));
+    }
   };
 
   const handleStickyMouseUp = () => {
-    if (draggingStickyId) {
-      setDraggingStickyId(null);
-    }
+    if (draggingStickyId) setDraggingStickyId(null);
+    if (draggingTextId) setDraggingTextId(null);
   };
 
   // Image Upload & Paste
@@ -1295,16 +1364,14 @@ export default function VirtualWhiteboard({
 
   const handleClearAll = () => {
     if (strokes.length === 0 && texts.length === 0 && stickies.length === 0 && images.length === 0) return;
-    if (window.confirm('Clear all drawings, notes, and text on this whiteboard?')) {
-      pushHistory();
-      setStrokes([]);
-      setTexts([]);
-      setStickies([]);
-      setImages([]);
-      setCurrentStroke(null);
-      setActiveTextInput(null);
-      showToast('Whiteboard cleared');
-    }
+    pushHistory();
+    setStrokes([]);
+    setTexts([]);
+    setStickies([]);
+    setImages([]);
+    setCurrentStroke(null);
+    setActiveTextInput(null);
+    showToast('Whiteboard cleared (Use Undo to restore)');
   };
 
   const handleShareToChat = () => {
@@ -1436,6 +1503,7 @@ export default function VirtualWhiteboard({
             <Highlighter className="w-4 h-4" />
           </button>
 
+
           {/* Eraser (Real Cutout) */}
           <button
             id="wb-tool-eraser"
@@ -1451,53 +1519,8 @@ export default function VirtualWhiteboard({
           <div className="w-px h-4 bg-brand-border mx-0.5" />
 
           {/* Geometric Shapes */}
-          <button
-            id="wb-tool-line"
-            onClick={() => setSelectedTool('line')}
-            className={`p-1.5 rounded-lg transition cursor-pointer ${
-              selectedTool === 'line' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-            title="Straight Line"
-          >
-            <Minus className="w-4 h-4" />
-          </button>
-
-          <button
-            id="wb-tool-arrow"
-            onClick={() => setSelectedTool('arrow')}
-            className={`p-1.5 rounded-lg transition cursor-pointer ${
-              selectedTool === 'arrow' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-            title="Arrow"
-          >
-            <ArrowRight className="w-4 h-4" />
-          </button>
-
-          <button
-            id="wb-tool-rect"
-            onClick={() => setSelectedTool('rect')}
-            className={`p-1.5 rounded-lg transition cursor-pointer ${
-              selectedTool === 'rect' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-            title="Rectangle"
-          >
-            <Square className="w-4 h-4" />
-          </button>
-
-          <button
-            id="wb-tool-circle"
-            onClick={() => setSelectedTool('circle')}
-            className={`p-1.5 rounded-lg transition cursor-pointer ${
-              selectedTool === 'circle' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-            title="Circle / Ellipse"
-          >
-            <Circle className="w-4 h-4" />
-          </button>
-
-          <div className="w-px h-4 bg-brand-border mx-0.5" />
-
-          {/* Text & Sticky Notes */}
+          
+          {/* Text Tool */}
           <button
             id="wb-tool-text"
             onClick={() => setSelectedTool('text')}
@@ -1509,16 +1532,78 @@ export default function VirtualWhiteboard({
             <Type className="w-4 h-4" />
           </button>
 
-          <button
-            id="wb-tool-sticky"
-            onClick={() => setSelectedTool('sticky')}
-            className={`p-1.5 rounded-lg transition cursor-pointer ${
-              selectedTool === 'sticky' ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-            title="Add Sticky Note"
-          >
-            <StickyNote className="w-4 h-4 text-amber-400" />
-          </button>
+          {/* INSERT MENU (Shapes, Emojis, Annotations) */}
+          <div className="relative">
+            <button
+              id="wb-tool-insert"
+              onClick={() => setIsInsertMenuOpen(!isInsertMenuOpen)}
+              className={`p-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                isInsertMenuOpen || ['line', 'arrow', 'rect', 'circle', 'sticky'].includes(selectedTool) ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+              title="Insert Shapes, Annotations, Emojis"
+            >
+              <PlusCircle className="w-4 h-4" />
+            </button>
+            
+            {isInsertMenuOpen && (
+              <div className="absolute top-12 left-0 w-64 bg-slate-900 border border-brand-border rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col">
+                <div className="flex border-b border-brand-border">
+                  <button onClick={() => setInsertMenuTab('shapes')} className={`flex-1 py-2 text-[10px] font-bold uppercase transition ${insertMenuTab === 'shapes' ? 'bg-purple-600/20 text-purple-300 border-b-2 border-purple-500' : 'text-slate-400 hover:bg-white/5'}`}>Shapes</button>
+                  <button onClick={() => setInsertMenuTab('annotations')} className={`flex-1 py-2 text-[10px] font-bold uppercase transition ${insertMenuTab === 'annotations' ? 'bg-purple-600/20 text-purple-300 border-b-2 border-purple-500' : 'text-slate-400 hover:bg-white/5'}`}>Notes</button>
+                  <button onClick={() => setInsertMenuTab('emojis')} className={`flex-1 py-2 text-[10px] font-bold uppercase transition ${insertMenuTab === 'emojis' ? 'bg-purple-600/20 text-purple-300 border-b-2 border-purple-500' : 'text-slate-400 hover:bg-white/5'}`}>Emojis</button>
+                </div>
+                
+                <div className="p-3">
+                  {insertMenuTab === 'shapes' && (
+                    <div className="grid grid-cols-4 gap-2">
+                      <button onClick={() => { setSelectedTool('rect'); setIsInsertMenuOpen(false); }} className={`p-2 rounded flex flex-col items-center gap-1 ${selectedTool === 'rect' ? 'bg-purple-500/30' : 'hover:bg-white/5'}`}><Square className="w-5 h-5 text-slate-300" /><span className="text-[9px] text-slate-400">Rect</span></button>
+                      <button onClick={() => { setSelectedTool('circle'); setIsInsertMenuOpen(false); }} className={`p-2 rounded flex flex-col items-center gap-1 ${selectedTool === 'circle' ? 'bg-purple-500/30' : 'hover:bg-white/5'}`}><Circle className="w-5 h-5 text-slate-300" /><span className="text-[9px] text-slate-400">Circle</span></button>
+                      <button onClick={() => { setSelectedTool('line'); setIsInsertMenuOpen(false); }} className={`p-2 rounded flex flex-col items-center gap-1 ${selectedTool === 'line' ? 'bg-purple-500/30' : 'hover:bg-white/5'}`}><Minus className="w-5 h-5 text-slate-300" /><span className="text-[9px] text-slate-400">Line</span></button>
+                      <button onClick={() => { setSelectedTool('arrow'); setIsInsertMenuOpen(false); }} className={`p-2 rounded flex flex-col items-center gap-1 ${selectedTool === 'arrow' ? 'bg-purple-500/30' : 'hover:bg-white/5'}`}><ArrowRight className="w-5 h-5 text-slate-300" /><span className="text-[9px] text-slate-400">Arrow</span></button>
+                    </div>
+                  )}
+                  {insertMenuTab === 'annotations' && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <button onClick={() => { setSelectedTool('sticky'); setIsInsertMenuOpen(false); }} className={`p-2 rounded flex flex-col items-center gap-2 border border-slate-700 ${selectedTool === 'sticky' ? 'bg-amber-500/20 border-amber-500' : 'hover:bg-white/5'}`}>
+                        <StickyNote className="w-6 h-6 text-amber-400" />
+                        <span className="text-[10px] text-slate-300">Sticky Note</span>
+                      </button>
+                      <button onClick={() => { document.getElementById('wb-tool-image')?.click(); setIsInsertMenuOpen(false); }} className="p-2 rounded flex flex-col items-center gap-2 border border-slate-700 hover:bg-white/5">
+                        <ImageIcon className="w-6 h-6 text-emerald-400" />
+                        <span className="text-[10px] text-slate-300">Image</span>
+                      </button>
+                    </div>
+                  )}
+                  {insertMenuTab === 'emojis' && (
+                    <div className="grid grid-cols-6 gap-1 h-32 overflow-y-auto">
+                      {['👍','👎','❤️','🔥','⭐','🎉','💡','🚀','👀','✅','❌','💯','😄','🤔','🙌','👏','🎨','📝','🔍','📌','⭐','⚠️','⛔','✅'].map(emoji => (
+                        <button 
+                          key={emoji}
+                          onClick={() => {
+                             pushHistory();
+                             const newText = {
+                                id: `txt-${Date.now()}`,
+                                x: -pan.x / zoom + (containerRef.current?.clientWidth || 800) / 2 / zoom,
+                                y: -pan.y / zoom + (containerRef.current?.clientHeight || 600) / 2 / zoom,
+                                text: emoji,
+                                color: selectedColor,
+                                fontSize: 48
+                             };
+                             setTexts(prev => [...prev, newText]);
+                             setIsInsertMenuOpen(false);
+                          }}
+                          className="text-2xl hover:bg-white/10 rounded transition cursor-pointer"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
 
           <button
             id="wb-tool-image"
@@ -1556,6 +1641,14 @@ export default function VirtualWhiteboard({
                 title={`Color: ${c}`}
               />
             ))}
+            <div className="w-px h-4 bg-slate-700 mx-1" />
+            <input 
+              type="color" 
+              value={selectedColor} 
+              onChange={(e) => setSelectedColor(e.target.value)}
+              className="w-5 h-5 rounded cursor-pointer border-0 bg-transparent overflow-hidden"
+              title="Custom Color"
+            />
           </div>
 
           {/* Stroke Width */}
@@ -1603,6 +1696,21 @@ export default function VirtualWhiteboard({
               </button>
             </div>
           )}
+
+          <div className="w-px h-4 bg-brand-border mx-0.5" />
+
+          {/* SNAP TO GRID BUTTON */}
+          <button
+            onClick={() => setIsSnapEnabled(!isSnapEnabled)}
+            className={`p-1.5 rounded-lg transition cursor-pointer ${
+              isSnapEnabled ? 'bg-purple-600 text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+            title={`Snap to Grid ${isSnapEnabled ? '(On)' : '(Off)'}`}
+          >
+            <Magnet className="w-4 h-4" />
+          </button>
+
+          <div className="w-px h-4 bg-brand-border mx-0.5" />
 
           {/* UNDO BUTTON */}
           <button
@@ -1845,13 +1953,93 @@ export default function VirtualWhiteboard({
             transformOrigin: '0 0'
           }}
         >
+
+          {/* DRAGGABLE / EDITABLE TEXTS */}
+          {texts.map(text => (
+            <div
+              key={text.id}
+              style={{ left: `${text.x}px`, top: `${text.y}px`, color: text.color, fontSize: `${text.fontSize}px` }}
+              className="absolute pointer-events-auto group cursor-move select-none animate-fadeIn"
+              onMouseDown={(e) => {
+                if (selectedTool === 'eraser') {
+                  pushHistory();
+                  setTexts(prev => prev.filter(t => t.id !== text.id));
+                  return;
+                }
+                if (editingTextId === text.id) return;
+                pushHistory();
+                setDraggingTextId(text.id);
+                const rect = containerRef.current?.getBoundingClientRect();
+                if (!rect || !containerRef.current) return;
+                
+                const scaleX = containerRef.current.offsetWidth / rect.width;
+                const scaleY = containerRef.current.offsetHeight / rect.height;
+                
+                const screenX = (e.clientX - rect.left) * scaleX;
+                const screenY = (e.clientY - rect.top) * scaleY;
+                const worldX = (screenX - pan.x) / zoom;
+                const worldY = (screenY - pan.y) / zoom;
+                setDragOffset({
+                  x: worldX - text.x,
+                  y: worldY - text.y
+                });
+              }}
+              onDoubleClick={() => setEditingTextId(text.id)}
+            >
+              {editingTextId === text.id ? (
+                <div className="flex items-center gap-1 bg-slate-900/90 p-1 rounded-md border border-purple-500">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={text.text}
+                    onChange={(e) => setTexts(prev => prev.map(t => t.id === text.id ? { ...t, text: e.target.value } : t))}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === 'Escape') setEditingTextId(null);
+                    }}
+                    className="bg-transparent font-semibold text-inherit focus:outline-none w-48"
+                  />
+                  <div className="flex flex-col gap-1">
+                    <button onClick={() => setTexts(prev => prev.map(t => t.id === text.id ? { ...t, fontSize: t.fontSize + 2 } : t))} className="bg-slate-700 hover:bg-slate-600 rounded px-1 text-[10px] text-white">+</button>
+                    <button onClick={() => setTexts(prev => prev.map(t => t.id === text.id ? { ...t, fontSize: Math.max(10, t.fontSize - 2) } : t))} className="bg-slate-700 hover:bg-slate-600 rounded px-1 text-[10px] text-white">-</button>
+                  </div>
+                  <button onClick={() => setEditingTextId(null)} className="p-1 bg-purple-600 hover:bg-purple-500 text-white rounded">
+                    <Check className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <div className="absolute -top-6 -right-6 opacity-0 group-hover:opacity-100 transition z-30 flex gap-1 bg-slate-900/90 rounded-md p-1 border border-brand-border">
+                    <button
+                      onClick={() => setEditingTextId(text.id)}
+                      className="p-1 hover:text-sky-400 transition cursor-pointer text-slate-300"
+                      title="Edit Text"
+                    >
+                      <Pencil className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        pushHistory();
+                        setTexts(prev => prev.filter(t => t.id !== text.id));
+                      }}
+                      className="p-1 hover:text-rose-400 transition cursor-pointer text-slate-300"
+                      title="Delete Text"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <span className="font-semibold whitespace-pre font-sans" style={{ textShadow: '0 2px 4px rgba(0,0,0,0.5)' }}>{text.text}</span>
+                </div>
+              )}
+            </div>
+          ))}
+
           {/* DRAGGABLE / EDITABLE STICKY NOTES */}
           {stickies.map(sticky => (
             <div
               key={sticky.id}
               id={`sticky-${sticky.id}`}
               style={{ left: `${sticky.x}px`, top: `${sticky.y}px` }}
-              className="absolute pointer-events-auto w-44 rounded-xl p-3 shadow-xl border bg-amber-200 text-amber-950 border-amber-300 flex flex-col group cursor-move select-none animate-fadeIn"
+              className={`absolute pointer-events-auto w-44 rounded-xl p-3 shadow-xl border flex flex-col group cursor-move select-none animate-fadeIn ${STICKY_COLORS.find(c => c.hex === sticky.color)?.bg || 'bg-amber-300 text-amber-950 border-amber-400'}`}
               onMouseDown={(e) => {
                 if (selectedTool === 'eraser') {
                   pushHistory();
@@ -1861,9 +2049,14 @@ export default function VirtualWhiteboard({
                 if ((e.target as HTMLElement).tagName === 'TEXTAREA' || (e.target as HTMLElement).tagName === 'BUTTON') return;
                 pushHistory();
                 setDraggingStickyId(sticky.id);
-                const rect = containerRef.current?.getBoundingClientRect() || { left: 0, top: 0 };
-                const screenX = e.clientX - rect.left;
-                const screenY = e.clientY - rect.top;
+                const rect = containerRef.current?.getBoundingClientRect();
+                if (!rect || !containerRef.current) return;
+                
+                const scaleX = containerRef.current.offsetWidth / rect.width;
+                const scaleY = containerRef.current.offsetHeight / rect.height;
+                
+                const screenX = (e.clientX - rect.left) * scaleX;
+                const screenY = (e.clientY - rect.top) * scaleY;
                 const worldX = (screenX - pan.x) / zoom;
                 const worldY = (screenY - pan.y) / zoom;
                 setDragOffset({
@@ -1872,24 +2065,39 @@ export default function VirtualWhiteboard({
                 });
               }}
             >
-              <div className="flex items-center justify-between pb-1 border-b border-amber-300/60 mb-1 text-[10px] font-bold text-amber-900/70">
-                <span>{sticky.author || 'Sticky Note'}</span>
-                <button
-                  onClick={() => {
-                    pushHistory();
-                    setStickies(prev => prev.filter(s => s.id !== sticky.id));
-                  }}
-                  className="opacity-0 group-hover:opacity-100 hover:text-rose-700 transition cursor-pointer"
-                  title="Delete note"
-                >
-                  <X className="w-3 h-3" />
-                </button>
+              <div className="flex flex-col gap-1 pb-1 border-b border-black/10 mb-1">
+                <div className="flex items-center justify-between text-[10px] font-bold opacity-70">
+                  <span>{sticky.author || 'Sticky Note'}</span>
+                  <button
+                    onClick={() => {
+                      pushHistory();
+                      setStickies(prev => prev.filter(s => s.id !== sticky.id));
+                    }}
+                    className="opacity-0 group-hover:opacity-100 hover:text-rose-700 transition cursor-pointer"
+                    title="Delete note"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                   {STICKY_COLORS.map(c => (
+                     <button
+                       key={c.hex}
+                       onClick={() => { pushHistory(); setStickies(prev => prev.map(s => s.id === sticky.id ? { ...s, color: c.hex } : s)); }}
+                       className={`w-3 h-3 rounded-full border border-black/20 ${c.bg.split(' ')[0]} hover:scale-110 transition`}
+                       title={c.label}
+                     />
+                   ))}
+                </div>
               </div>
               <textarea
                 value={sticky.text}
                 onChange={(e) => {
                   const val = e.target.value;
                   setStickies(prev => prev.map(s => s.id === sticky.id ? { ...s, text: val } : s));
+                }}
+                onFocus={() => {
+                  pushHistory();
                 }}
                 rows={3}
                 className="w-full bg-transparent resize-none text-xs font-medium text-amber-950 placeholder-amber-900/40 focus:outline-none"

@@ -1,4 +1,4 @@
-import { Student, Group, Transaction, Occurrence, Task, Employee, ClassSession, Meeting, BookCollection, RolePreset, EmployeeChatMessage } from './types';
+import { Student, Group, Transaction, Occurrence, Task, Employee, ClassSession, Meeting, BookCollection, RolePreset, EmployeeChatMessage, ChatChannel } from './types';
 
 export const MOCK_COLLECTIONS: BookCollection[] = [];
 
@@ -128,5 +128,40 @@ export const MOCK_MESSAGES: EmployeeChatMessage[] = [
     text: 'Welcome to the Staff Interemployee Chat! You can send real-time team messages, share files/images, and start direct chats with colleagues.',
     timestamp: new Date().toISOString(),
     reactions: [{ emoji: '👋', users: ['1'] }, { emoji: '🎉', users: ['1'] }]
+  }
+];
+
+export const DEFAULT_CHAT_CHANNELS: ChatChannel[] = [
+  { 
+    id: 'general', 
+    name: 'general-staff', 
+    description: 'School-wide announcements, team chat and daily coordination', 
+    icon: 'Hash',
+    category: 'general',
+    isDefault: true
+  },
+  { 
+    id: 'teachers', 
+    name: 'teachers-lounge', 
+    description: 'Pedagogical strategies, lesson planning and academic discussions', 
+    icon: 'BookOpen',
+    category: 'department',
+    isDefault: true
+  },
+  { 
+    id: 'announcements', 
+    name: 'official-notices', 
+    description: 'Important executive and institutional announcements', 
+    icon: 'Megaphone',
+    category: 'general',
+    isDefault: true
+  },
+  { 
+    id: 'operations', 
+    name: 'operations-admin', 
+    description: 'Administrative, financial and front-desk logistics', 
+    icon: 'Briefcase',
+    category: 'department',
+    isDefault: true
   }
 ];

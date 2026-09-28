@@ -1,19 +1,9 @@
 const fs = require('fs');
-let text = fs.readFileSync('src/hooks/useFirebaseSync.ts', 'utf8');
+let code = fs.readFileSync('src/context/LiveCallContext.tsx', 'utf8');
 
-text = text.replace(
-  "export function useFirebaseSync<T>(",
-  "export function useFirebaseSync<T>("
+code = code.replace(
+  'isAudioOn: localP?.isAudioOn ?? p.isAudioOn, isVideoOn: localP?.isVideoOn ?? p.isVideoOn',
+  'isAudioOn: p.isAudioOn, isVideoOn: p.isVideoOn'
 );
 
-text = text.replace(
-  "]: [T[], (action: T[] | ((prev: T[]) => T[])) => void] {",
-  "]: [T[], (action: T[] | ((prev: T[]) => T[])) => void, boolean] {"
-);
-
-text = text.replace(
-  "return [data, setSyncedData];",
-  "return [data, setSyncedData, isLoaded];"
-);
-
-fs.writeFileSync('src/hooks/useFirebaseSync.ts', text);
+fs.writeFileSync('src/context/LiveCallContext.tsx', code);

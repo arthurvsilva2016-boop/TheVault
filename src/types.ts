@@ -4,6 +4,8 @@ export type Permission = Tab | 'dashboard:all' | 'calendar:all' | 'groups:all' |
 
 export interface ChatAttachment {
   id: string;
+  userId?: string;
+  deviceId?: string;
   name: string;
   url: string;
   type: 'image' | 'file';
@@ -87,11 +89,18 @@ export interface ChatChannel {
   id: string;
   name: string;
   description?: string;
-  type: 'channel' | 'dm';
+  type?: 'channel' | 'dm' | 'custom';
   icon?: string;
+  category?: 'general' | 'department' | 'projects' | 'custom' | string;
   unreadCount?: number;
   recipientEmployeeId?: string;
   isPrivate?: boolean;
+  isDefault?: boolean;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt?: string;
+  allowedRoles?: string[];
+  members?: string[];
 }
 
 export interface WhiteboardFile {
@@ -348,6 +357,8 @@ export type CallType = 'class' | 'meeting' | '1on1';
 
 export interface CallParticipant {
   id: string;
+  userId?: string;
+  deviceId?: string;
   name: string;
   role: string;
   avatarUrl?: string;
@@ -386,6 +397,7 @@ export interface LiveCallSession {
   screenShareRequest?: { participantId: string; name: string };
   screenShareApprovedFor?: string;
   messages: Array<{ id: string; senderId: string; senderName: string; text: string; time: string }>;
+  liveCaptions?: Array<{ id: string; speakerId: string; speakerName: string; originalText: string; sourceLang?: string; timestamp: string }>;
 }
 
 

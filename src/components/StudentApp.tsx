@@ -35,16 +35,44 @@ import {
   ExternalLink,
   ChevronDown,
   Mic,
+  MicOff,
   Square,
-  Globe
+  Globe,
+  Loader2,
+  Settings,
+  Search,
+  Pin,
+  Radio,
+  Headphones,
+  Volume2,
+  Languages,
+  Captions,
+  RefreshCw,
+  ArrowDown,
+  FileDown,
+  Copy,
+  Check,
+  Sparkle,
+  AlertCircle,
+  MessageSquareQuote,
+  Trash2
 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import SaveButton from './SaveButton';
 import VirtualWhiteboard from './VirtualWhiteboard';
 import VaultCallOverlay from './calling/VaultCallOverlay';
+import { CaptionHistoryView, CaptionLogItem } from './calling/CaptionHistoryView';
 import World from './game/World';
 import { useLiveCall } from '../context/LiveCallContext';
 import { Student, Group, ClassSession, Transaction, Employee, EmployeeChatMessage, ChatAttachment } from '../types';
 import { useLanguage } from '../context/LanguageContext';
+import { 
+  SUPPORTED_LANGUAGES, 
+  SupportedLanguage, 
+  QUICK_SPEECH_PRESETS,
+  translateCaption, 
+  speakText 
+} from '../utils/translationService';
 
 interface StudentAppProps {
   student: Student;
@@ -85,8 +113,14 @@ export default function StudentApp({
   onTogglePin,
   onMarkMessageRead
 }: StudentAppProps) {
-  const { joinCall, startCall } = useLiveCall();
-  const [activeTab, setActiveTab] = useState<'overview' | 'chat' | 'whiteboard' | 'calendar' | 'grades' | 'finance' | 'profile' | 'files' | 'game'>('overview');
+  const { 
+    activeCall, 
+    startCall, 
+    joinCall, 
+    broadcastLiveCaption, 
+    isMicMuted 
+  } = useLiveCall();
+  const [activeTab, setActiveTab] = useState<'overview' | 'chat' | 'whiteboard' | 'calendar' | 'grades' | 'finance' | 'profile' | 'files' | 'game' | 'preferences'>('overview');
   const { t } = useLanguage();
 
   const cleanGroup = student.group ? String(student.group).trim().toLowerCase() : '';
@@ -114,7 +148,10 @@ export default function StudentApp({
   const defaultChannelId = myGroup ? `group_${myGroup.code || myGroup.id}` : 'general';
   const [activeChannelId, setActiveChannelId] = useState<string>(defaultChannelId);
   const [chatMessageText, setChatMessageText] = useState('');
-  const [chatViewLayout, setChatViewLayout] = useState<'chat' | 'split' | 'whiteboard'>('chat');
+  const [chatViewLayout, setChatViewLayout] = useState<'chat' | 'split' | 'whiteboard' | 'captions'>('chat');
+  const [isCaptionHistoryOverlayOpen, setIsCaptionHistoryOverlayOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showPinned, setShowPinned] = useState(false);
   const [chatAttachments, setChatAttachments] = useState<ChatAttachment[]>([]);
   const [selectedImagePreview, setSelectedImagePreview] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -122,17 +159,517 @@ export default function StudentApp({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
+  const getFileThumbnail = (att: ChatAttachment, isPreviewMode: boolean = false) => {
+    const ext = att.name.split('.').pop()?.toLowerCase();
+    
+    if (ext === 'pdf') {
+      return (
+        <div className={`${isPreviewMode ? 'w-12 h-12' : 'w-10 h-12 shrink-0'} rounded-lg bg-red-500/10 border border-red-500/20 flex flex-col items-center justify-center`}>
+          <FileText className={`${isPreviewMode ? 'w-4 h-4' : 'w-5 h-5'} text-red-400 mb-0.5`} />
+          <span className="text-[7px] font-bold text-red-400 uppercase">PDF</span>
+        </div>
+      );
+    }
+    
+    if (ext === 'doc' || ext === 'docx') {
+      return (
+        <div className={`${isPreviewMode ? 'w-12 h-12' : 'w-10 h-12 shrink-0'} rounded-lg bg-blue-500/10 border border-blue-500/20 flex flex-col items-center justify-center`}>
+          <FileText className={`${isPreviewMode ? 'w-4 h-4' : 'w-5 h-5'} text-blue-400 mb-0.5`} />
+          <span className="text-[7px] font-bold text-blue-400 uppercase">DOC</span>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`${isPreviewMode ? 'w-12 h-12' : 'w-10 h-12 shrink-0'} rounded-lg bg-brand-card border border-brand-border flex items-center justify-center`}>
+        <FileText className={`${isPreviewMode ? 'w-4 h-4' : 'w-5 h-5'} text-slate-400`} />
+      </div>
+    );
+  };
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Voice Recording State
+  // Language & Translation State
+  const [preferredLanguage, setPreferredLanguage] = useState<SupportedLanguage>(SUPPORTED_LANGUAGES[0]); // Subtitles target
+  const [inputLanguage, setInputLanguage] = useState<SupportedLanguage>(SUPPORTED_LANGUAGES[0]); // Voice input language
+  const [isCaptionsAutoScroll, setIsCaptionsAutoScroll] = useState<boolean>(true);
+  const [speechEngineStatus, setSpeechEngineStatus] = useState<'listening' | 'idle' | 'muted' | 'unsupported' | 'error' | 'permission_denied'>('idle');
+  const [engineRestartCount, setEngineRestartCount] = useState<number>(0);
+  const [captionHistorySearch, setCaptionHistorySearch] = useState<string>('');
+  const [copiedCaptionId, setCopiedCaptionId] = useState<string | null>(null);
+  const [copiedAllTranscript, setCopiedAllTranscript] = useState<boolean>(false);
+  const [ttsEnabledForCaptions, setTtsEnabledForCaptions] = useState<boolean>(false);
+  const [interimSpeechText, setInterimSpeechText] = useState<string>('');
+
+  // Active floating subtitle
+  const [activeLiveCaption, setActiveLiveCaption] = useState<{
+    id: string;
+    speakerName: string;
+    originalText: string;
+    translatedText?: string;
+    targetLang: string;
+  } | null>(null);
+
+  // Chronological full session transcript
+  const [captionsLog, setCaptionsLog] = useState<Array<{
+    id: string;
+    timestamp: string;
+    speakerId: string;
+    speakerName: string;
+    speakerRole?: string;
+    originalText: string;
+    translatedText?: string;
+    langCode: string;
+    isLocal?: boolean;
+  }>>([
+    {
+      id: 'cap-init-welcome',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      speakerId: 'sys-welcome',
+      speakerName: 'Vault Class System',
+      speakerRole: 'System',
+      originalText: 'Welcome to class! Live captions and real-time translation are active.',
+      translatedText: 'Welcome to class! Live captions and real-time translation are active.',
+      langCode: 'en',
+      isLocal: false
+    }
+  ]);
+
+  const captionsContainerRef = useRef<HTMLDivElement | null>(null);
+  const captionsEndRef = useRef<HTMLDivElement | null>(null);
+  const processedCaptionsRef = useRef<Set<string>>(new Set(['cap-init-welcome']));
+  const captionDismissTimerRef = useRef<any>(null);
+  const interimDebounceTimerRef = useRef<any>(null);
+  const currentInterimTextRef = useRef<string>('');
+  const micStreamRef = useRef<MediaStream | null>(null);
+
+  // Voice Recording State & Mode
+  const [voiceRecognitionMode, setVoiceRecognitionMode] = useState<'push-to-talk' | 'hands-free'>('push-to-talk');
+  const [isAutoScrollLocked, setIsAutoScrollLocked] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionMode, setTranscriptionMode] = useState<'live' | 'text'>('live');
+  const [autoInsertTranscription, setAutoInsertTranscription] = useState(true);
+  const [pendingTranscription, setPendingTranscription] = useState<string | null>(null);
+  const [audioLevel, setAudioLevel] = useState(0);
+  
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const isHandsFreeRunningRef = useRef(false);
 
-  const startRecording = async () => {
+  const updateAudioLevel = () => {
+    if (!analyserRef.current) return;
+    const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    analyserRef.current.getByteFrequencyData(dataArray);
+    const sum = dataArray.reduce((a, b) => a + b, 0);
+    const avg = sum / dataArray.length;
+    // Map avg (0-255) to 0-100
+    setAudioLevel(Math.min(100, Math.round((avg / 255) * 100 * 1.5)));
+    animationFrameRef.current = requestAnimationFrame(updateAudioLevel);
+  };
+
+  // Synchronize incoming room call live captions into captionsLog with translation
+  useEffect(() => {
+    if (!activeCall?.liveCaptions?.length) return;
+    const latestCaptions = activeCall.liveCaptions;
+    
+    latestCaptions.forEach(async (cap) => {
+      const capKey = `${cap.speakerId}-${cap.timestamp}-${cap.originalText}`;
+      if (!processedCaptionsRef.current.has(capKey)) {
+        processedCaptionsRef.current.add(capKey);
+
+        const translated = await translateCaption(cap.originalText, preferredLanguage.code, cap.sourceLang || 'en');
+
+        // Set active floating caption
+        setActiveLiveCaption({
+          id: `cap-active-${Date.now()}`,
+          speakerName: cap.speakerName,
+          originalText: cap.originalText,
+          translatedText: translated,
+          targetLang: preferredLanguage.code
+        });
+
+        if (captionDismissTimerRef.current) clearTimeout(captionDismissTimerRef.current);
+        captionDismissTimerRef.current = setTimeout(() => {
+          setActiveLiveCaption(null);
+        }, 5000);
+
+        // Append to caption history log
+        setCaptionsLog(prev => [
+          ...prev,
+          {
+            id: `cap-room-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+            timestamp: new Date(cap.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            speakerId: cap.speakerId,
+            speakerName: cap.speakerName,
+            speakerRole: cap.speakerId === student.id ? 'Student' : 'Classroom',
+            originalText: cap.originalText,
+            translatedText: translated,
+            langCode: preferredLanguage.code,
+            isLocal: cap.speakerId === student.id
+          }
+        ]);
+
+        if (ttsEnabledForCaptions && cap.speakerId !== student.id) {
+          speakText(translated || cap.originalText, preferredLanguage.speechLang);
+        }
+      }
+    });
+  }, [activeCall?.liveCaptions, preferredLanguage.code, preferredLanguage.speechLang, ttsEnabledForCaptions, student.id]);
+
+  // Dynamically re-translate all existing captions when student switches preferredLanguage
+  const handlePreferredLanguageChange = async (newLang: SupportedLanguage) => {
+    setPreferredLanguage(newLang);
+    showToast(`🌐 Subtitles translated to ${newLang.flag} ${newLang.name}`);
+    
+    const updated = await Promise.all(
+      captionsLog.map(async (item) => {
+        if (item.originalText) {
+          const translated = await translateCaption(item.originalText, newLang.code, inputLanguage.code);
+          return {
+            ...item,
+            translatedText: translated,
+            langCode: newLang.code
+          };
+        }
+        return item;
+      })
+    );
+    setCaptionsLog(updated);
+
+    if (activeLiveCaption && activeLiveCaption.originalText) {
+      const activeTrans = await translateCaption(activeLiveCaption.originalText, newLang.code, inputLanguage.code);
+      setActiveLiveCaption(prev => prev ? {
+        ...prev,
+        translatedText: activeTrans,
+        targetLang: newLang.code
+      } : null);
+    }
+  };
+
+  // Commit a raw transcript item (translates, updates history, broadcasts, and inserts to chat)
+  const commitSpeechTranscript = async (rawText: string) => {
+    if (!rawText || rawText.trim().length < 1) return;
+    const cleanText = rawText.trim();
+    const capId = `cap-local-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    
+    processedCaptionsRef.current.add(capId);
+
+    const translated = await translateCaption(cleanText, preferredLanguage.code, inputLanguage.code);
+
+    // Broadcast to room peers if live call context is active
+    if (broadcastLiveCaption) {
+      broadcastLiveCaption({
+        speakerId: student.id,
+        speakerName: student.name,
+        originalText: cleanText,
+        sourceLang: inputLanguage.code
+      });
+    }
+
+    // Set floating live subtitle
+    setActiveLiveCaption({
+      id: capId,
+      speakerName: student.name,
+      originalText: cleanText,
+      translatedText: translated,
+      targetLang: preferredLanguage.code
+    });
+
+    if (captionDismissTimerRef.current) clearTimeout(captionDismissTimerRef.current);
+    captionDismissTimerRef.current = setTimeout(() => {
+      setActiveLiveCaption(null);
+    }, 5000);
+
+    // Commit to caption history log
+    setCaptionsLog(prev => [
+      ...prev,
+      {
+        id: capId,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        speakerId: student.id,
+        speakerName: student.name,
+        speakerRole: 'Student',
+        originalText: cleanText,
+        translatedText: translated,
+        langCode: preferredLanguage.code,
+        isLocal: true
+      }
+    ]);
+
+    // Insert into chat if auto-insert is enabled
+    if (autoInsertTranscription) {
+      setChatMessageText(prev => (prev ? prev.trim() + ' ' : '') + cleanText);
+      showToast("Speech added to chat message.");
+    } else {
+      setPendingTranscription(cleanText);
+    }
+
+    if (ttsEnabledForCaptions) {
+      speakText(translated || cleanText, preferredLanguage.speechLang);
+    }
+  };
+
+  // Auto-scroll caption history container when new captions arrive
+  useEffect(() => {
+    if (isCaptionsAutoScroll && (chatViewLayout === 'captions' || isCaptionHistoryOverlayOpen)) {
+      if (captionsContainerRef.current) {
+        captionsContainerRef.current.scrollTo({
+          top: captionsContainerRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+      captionsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [captionsLog, activeLiveCaption, interimSpeechText, isCaptionsAutoScroll, chatViewLayout, isCaptionHistoryOverlayOpen]);
+
+  const handleCaptionsScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    const isNearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 60;
+    setIsCaptionsAutoScroll(isNearBottom);
+  };
+
+  const handleDownloadCaptionsTranscript = () => {
+    if (captionsLog.length === 0) {
+      showToast("No captions to download yet.");
+      return;
+    }
+    const transcriptText = captionsLog.map(c => 
+      `[${c.timestamp}] ${c.speakerName} (${c.speakerRole || 'Participant'})\n` +
+      `Original: ${c.originalText}\n` +
+      (c.translatedText && c.translatedText !== c.originalText ? `Translated (${c.langCode.toUpperCase()}): ${c.translatedText}\n` : '') +
+      `----------------------------------------`
+    ).join('\n\n');
+
+    const fullContent = `VAULT CLASS MEETING TRANSCRIPT\nStudent: ${student.name} (${student.id})\nGroup: ${myGroup?.name || 'Class'}\nDate: ${new Date().toLocaleDateString()}\nTime: ${new Date().toLocaleTimeString()}\nPreferred Subtitle Language: ${preferredLanguage.name} (${preferredLanguage.code})\nTotal Captions: ${captionsLog.length}\n========================================\n\n${transcriptText}`;
+
+    const blob = new Blob([fullContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `class-captions-${student.username || 'student'}-${Date.now()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast("📄 Caption transcript downloaded!");
+  };
+
+  const handleCopyAllTranscript = () => {
+    if (captionsLog.length === 0) return;
+    const text = captionsLog.map(c => `[${c.timestamp}] ${c.speakerName}: ${c.translatedText || c.originalText}`).join('\n');
+    navigator.clipboard?.writeText(text);
+    setCopiedAllTranscript(true);
+    showToast("📋 Full transcript copied to clipboard!");
+    setTimeout(() => setCopiedAllTranscript(false), 2500);
+  };
+
+  const handleCopySingleCaption = (captionId: string, text: string) => {
+    navigator.clipboard?.writeText(text);
+    setCopiedCaptionId(captionId);
+    showToast("Caption line copied!");
+    setTimeout(() => setCopiedCaptionId(null), 2000);
+  };
+
+  // Start real-time speech recognition engine
+  const startSpeechEngine = async () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    try {
+      // 1. Initialize audio analyser for real-time visual waveform
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = stream;
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContext) {
+          audioContextRef.current = new AudioContext();
+          const source = audioContextRef.current.createMediaStreamSource(stream);
+          analyserRef.current = audioContextRef.current.createAnalyser();
+          analyserRef.current.fftSize = 256;
+          source.connect(analyserRef.current);
+          updateAudioLevel();
+        }
+      } catch (streamErr) {
+        console.warn("Could not attach audio analyser:", streamErr);
+      }
+
+      if (!SpeechRecognition) {
+        setSpeechEngineStatus('unsupported');
+        setIsRecording(true);
+        showToast("⚠️ Browser Speech API not available. Voice note recording active.");
+        startRecordingFallback();
+        return;
+      }
+
+      if (speechRecognitionRef.current) {
+        try { speechRecognitionRef.current.abort(); } catch (e) {}
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = inputLanguage.speechLang || 'en-US';
+
+      recognition.onstart = () => {
+        setIsRecording(true);
+        isHandsFreeRunningRef.current = true;
+        setSpeechEngineStatus('listening');
+        showToast(`🎙️ Microphone active (${inputLanguage.flag} ${inputLanguage.name}) — Subtitles in ${preferredLanguage.flag} ${preferredLanguage.name}`);
+      };
+
+      recognition.onresult = async (event: any) => {
+        let interimChunk = '';
+        let finalChunk = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const trans = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalChunk += trans + ' ';
+          } else {
+            interimChunk += trans + ' ';
+          }
+        }
+
+        if (interimChunk.trim()) {
+          const interim = interimChunk.trim();
+          currentInterimTextRef.current = interim;
+          setInterimSpeechText(interim);
+
+          // Real-time live subtitle preview
+          const translatedInterim = await translateCaption(interim, preferredLanguage.code, inputLanguage.code);
+          setActiveLiveCaption({
+            id: 'interim-live',
+            speakerName: student.name,
+            originalText: interim,
+            translatedText: translatedInterim,
+            targetLang: preferredLanguage.code
+          });
+
+          // Debounce interim chunk to commit if speech stops without an isFinal event
+          if (interimDebounceTimerRef.current) clearTimeout(interimDebounceTimerRef.current);
+          interimDebounceTimerRef.current = setTimeout(() => {
+            if (currentInterimTextRef.current && isHandsFreeRunningRef.current) {
+              const textToCommit = currentInterimTextRef.current;
+              currentInterimTextRef.current = '';
+              setInterimSpeechText('');
+              commitSpeechTranscript(textToCommit);
+            }
+          }, 2400);
+        }
+
+        if (finalChunk.trim()) {
+          if (interimDebounceTimerRef.current) clearTimeout(interimDebounceTimerRef.current);
+          currentInterimTextRef.current = '';
+          setInterimSpeechText('');
+          await commitSpeechTranscript(finalChunk.trim());
+          if (voiceRecognitionMode === 'push-to-talk') {
+            stopSpeechEngine();
+          }
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.warn("Speech recognition error:", event.error);
+        if (event.error === 'not-allowed') {
+          setSpeechEngineStatus('permission_denied');
+          showToast("❌ Microphone permission denied. Enable microphone in browser settings.");
+          stopSpeechEngine();
+        } else if (event.error !== 'no-speech') {
+          setSpeechEngineStatus('error');
+        }
+      };
+
+      recognition.onend = () => {
+        if (isHandsFreeRunningRef.current) {
+          try {
+            recognition.start();
+          } catch (e) {
+            setTimeout(() => {
+              if (isHandsFreeRunningRef.current) {
+                try { recognition.start(); } catch (err) {}
+              }
+            }, 300);
+          }
+        } else {
+          setSpeechEngineStatus('idle');
+          setIsRecording(false);
+        }
+      };
+
+      speechRecognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error("Speech recognition startup error:", err);
+      setSpeechEngineStatus('error');
+      startRecordingFallback();
+    }
+  };
+
+  const stopSpeechEngine = () => {
+    isHandsFreeRunningRef.current = false;
+    if (speechRecognitionRef.current) {
+      try { speechRecognitionRef.current.stop(); } catch (e) {}
+      speechRecognitionRef.current = null;
+    }
+    if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach(t => t.stop());
+      micStreamRef.current = null;
+    }
+    setAudioLevel(0);
+    setInterimSpeechText('');
+    setIsRecording(false);
+    setSpeechEngineStatus('idle');
+  };
+
+  const restartSpeechEngine = () => {
+    stopSpeechEngine();
+    setEngineRestartCount(prev => prev + 1);
+    setTimeout(() => {
+      startSpeechEngine();
+      showToast("🔄 Speech engine re-initialized!");
+    }, 400);
+  };
+
+  const toggleVoiceRecording = () => {
+    if (isRecording) {
+      stopSpeechEngine();
+      showToast("Microphone muted / stopped.");
+    } else {
+      startSpeechEngine();
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      isHandsFreeRunningRef.current = false;
+      if (speechRecognitionRef.current) {
+        try { speechRecognitionRef.current.abort(); } catch (e) {}
+      }
+      if (captionDismissTimerRef.current) clearTimeout(captionDismissTimerRef.current);
+      if (interimDebounceTimerRef.current) clearTimeout(interimDebounceTimerRef.current);
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(t => t.stop());
+      }
+    };
+  }, []);
+
+  const startRecordingFallback = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
@@ -145,28 +682,34 @@ export default function StudentApp({
         }
       };
 
-      mediaRecorder.onstop = () => {
-        // Simulated transcription service
-        const transcribedText = "This is a recorded voice message transcript.";
-        setChatMessageText(prev => (prev + " " + transcribedText).trim());
-        showToast("Voice message transcribed to chat!");
-        
-        // Stop all tracks to release microphone
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const url = URL.createObjectURL(audioBlob);
+        const newAttachment: ChatAttachment = {
+          id: `att-audio-${Date.now()}`,
+          name: `Voice_Note_${new Date().toLocaleTimeString().replace(/:/g, '-')}.webm`,
+          url: url,
+          type: 'file',
+          size: audioBlob.size,
+          mimeType: 'audio/webm'
+        };
+        setChatAttachments(prev => [...prev, newAttachment]);
+        showToast("Voice note attached to message.");
         stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorder.start();
       setIsRecording(true);
     } catch (err) {
-      console.error("Error accessing microphone:", err);
+      console.error("Error accessing microphone fallback:", err);
       showToast("Microphone access is required to use voice notes.");
     }
   };
 
   const stopRecording = () => {
+    stopSpeechEngine();
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
-      setIsRecording(false);
     }
   };
 
@@ -212,6 +755,21 @@ export default function StudentApp({
 
   // Filter messages for active channel
   const channelMessages = messages.filter(m => m.channelId === activeChannelId);
+  const displayedMessages = channelMessages.filter(m => !searchQuery.trim() || m.text.toLowerCase().includes(searchQuery.toLowerCase()));
+  const pinnedMessages = channelMessages.filter(m => m.pinned);
+
+  const renderMessageText = (text: string) => {
+    if (!searchQuery.trim()) return <>{text}</>;
+    const regex = new RegExp(`(${searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    const parts = text.split(regex);
+    return (
+      <>
+        {parts.map((part, i) => 
+          regex.test(part) ? <mark key={i} className="bg-yellow-400/80 text-black rounded px-0.5">{part}</mark> : part
+        )}
+      </>
+    );
+  };
 
   // Mark messages as read
   useEffect(() => {
@@ -224,12 +782,12 @@ export default function StudentApp({
     }
   }, [activeTab, channelMessages, onMarkMessageRead, student.id]);
 
-  // Scroll to bottom of chat
+  // Scroll to bottom of chat with auto-scroll lock check
   useEffect(() => {
-    if (activeTab === 'chat') {
+    if (activeTab === 'chat' && !isAutoScrollLocked) {
       chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [channelMessages.length, activeTab]);
+  }, [channelMessages.length, activeTab, isAutoScrollLocked]);
 
   // Send message
   const handleSendChatMessage = (e: React.FormEvent) => {
@@ -467,7 +1025,8 @@ export default function StudentApp({
               { id: 'calendar', label: 'Schedule & Files', icon: Calendar },
               { id: 'grades', label: 'Grades', icon: FileText },
               { id: 'finance', label: 'Finance', icon: CreditCard },
-              { id: 'profile', label: 'My Profile', icon: User }
+              { id: 'profile', label: 'My Profile', icon: User },
+              { id: 'preferences', label: 'Preferences', icon: Settings }
             ].map(item => (
               <button
                 key={item.id}
@@ -511,7 +1070,15 @@ export default function StudentApp({
         {/* Main Dynamic View Area */}
         <main className="flex-1 overflow-y-auto p-3 sm:p-5 md:p-6 min-w-0 custom-scrollbar">
           <div className="max-w-5xl mx-auto space-y-5 pb-16 md:pb-6">
-            
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+                className="h-full"
+              >
             {/* ========================================================================= */}
             {/* TAB: OVERVIEW (Vertical Mobile-First Layout)                                */}
             {/* ========================================================================= */}
@@ -826,7 +1393,7 @@ export default function StudentApp({
                     <button
                       onClick={() => setChatViewLayout('chat')}
                       className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
-                        chatViewLayout === 'chat' ? 'bg-purple-600 text-white' : 'text-slate-400'
+                        chatViewLayout === 'chat' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'
                       }`}
                     >
                       Chat
@@ -834,7 +1401,7 @@ export default function StudentApp({
                     <button
                       onClick={() => setChatViewLayout('split')}
                       className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
-                        chatViewLayout === 'split' ? 'bg-purple-600 text-white' : 'text-slate-400'
+                        chatViewLayout === 'split' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'
                       }`}
                     >
                       Split
@@ -842,17 +1409,72 @@ export default function StudentApp({
                     <button
                       onClick={() => setChatViewLayout('whiteboard')}
                       className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer ${
-                        chatViewLayout === 'whiteboard' ? 'bg-purple-600 text-white' : 'text-slate-400'
+                        chatViewLayout === 'whiteboard' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'
                       }`}
                     >
                       Board
                     </button>
+                    <button
+                      onClick={() => setChatViewLayout('captions')}
+                      className={`px-2.5 py-1 rounded-lg font-semibold transition cursor-pointer flex items-center space-x-1.5 ${
+                        chatViewLayout === 'captions' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      <Captions className="w-3.5 h-3.5" />
+                      <span>Captions</span>
+                      {captionsLog.length > 0 && (
+                        <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold ${
+                          chatViewLayout === 'captions' ? 'bg-white/20 text-white' : 'bg-purple-500/20 text-purple-300'
+                        }`}>
+                          {captionsLog.length}
+                        </span>
+                      )}
+                    </button>
                   </div>
                 </div>
 
-                {/* Main Chat / Whiteboard Stage */}
+                {/* Main Chat / Whiteboard / Captions Stage */}
                 <div className="flex-1 min-h-0 bg-brand-card rounded-3xl border border-brand-border overflow-hidden flex flex-col shadow-xl">
-                  {chatViewLayout === 'whiteboard' ? (
+                  {chatViewLayout === 'captions' ? (
+                    <div className="flex-1 p-2 flex flex-col min-h-0">
+                      <CaptionHistoryView
+                        captionsLog={captionsLog.map(c => ({
+                          id: c.id,
+                          speakerId: c.speakerId,
+                          speakerName: c.speakerName,
+                          speakerRole: c.speakerRole,
+                          originalText: c.originalText,
+                          translatedText: c.translatedText,
+                          sourceLang: inputLanguage.code,
+                          targetLang: preferredLanguage.code,
+                          timestamp: c.timestamp,
+                          isSelf: c.speakerId === student.id || c.isLocal
+                        }))}
+                        preferredLanguage={preferredLanguage}
+                        onLanguageChange={handlePreferredLanguageChange}
+                        isRecording={isRecording}
+                        onToggleRecording={toggleVoiceRecording}
+                        voiceRecognitionMode={voiceRecognitionMode}
+                        onToggleVoiceMode={(mode) => setVoiceRecognitionMode(mode)}
+                        audioLevel={audioLevel}
+                        interimSpeechText={interimSpeechText}
+                        speechEngineStatus={speechEngineStatus}
+                        onRestartSpeechEngine={restartSpeechEngine}
+                        onSendCaptionToChat={(text) => {
+                          setChatMessageText(prev => (prev ? prev.trim() + ' ' : '') + text);
+                          setChatViewLayout('chat');
+                          showToast("Caption inserted into chat message!");
+                        }}
+                        onClearCaptions={() => {
+                          setCaptionsLog([]);
+                          showToast("Captions history cleared.");
+                        }}
+                        onTriggerPresetSpeech={(presetText) => {
+                          commitSpeechTranscript(presetText);
+                        }}
+                      />
+                    </div>
+                  ) : chatViewLayout === 'whiteboard' ? (
                     <div className="flex-1 p-2 flex flex-col min-h-0">
                       <VirtualWhiteboard
                         boardId={`student_board_${activeChannelId}`}
@@ -866,8 +1488,15 @@ export default function StudentApp({
                     <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-2 p-2 min-h-0">
                       {/* Left: Chat Feed */}
                       <div className="flex flex-col h-full bg-brand-dark/60 rounded-2xl border border-brand-border overflow-hidden">
-                        <div className="flex-1 p-3 overflow-y-auto space-y-3 custom-scrollbar">
-                          {channelMessages.map(msg => (
+                        <div 
+                          onScroll={(e) => {
+                            const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+                            const isNearBottom = scrollHeight - scrollTop - clientHeight < 65;
+                            setIsAutoScrollLocked(!isNearBottom);
+                          }}
+                          className="flex-1 p-3 overflow-y-auto space-y-3 custom-scrollbar relative"
+                        >
+                          {displayedMessages.map(msg => (
                             <div key={msg.id} className={`group flex flex-col ${msg.senderId === student.id ? 'items-end' : 'items-start'}`}>
                               <div className={`relative max-w-[85%] rounded-2xl p-2.5 text-xs ${
                                 msg.senderId === student.id 
@@ -876,41 +1505,94 @@ export default function StudentApp({
                               }`}>
                                 <div className="flex justify-between items-baseline mb-0.5 space-x-2">
                                   <span className="font-bold text-[10px] opacity-90">{msg.senderName}</span>
+                                  {msg.pinned && <Pin className="w-2.5 h-2.5 text-amber-300 fill-current opacity-80" />}
                                   <span className="text-[9px] opacity-60">{msg.timestamp}</span>
                                 </div>
-                                <p className="text-xs whitespace-pre-wrap">{msg.text}</p>
+                                <p className="text-xs whitespace-pre-wrap leading-relaxed">{renderMessageText(msg.text)}</p>
                               </div>
-                                <div className="flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition">
+                                <div className="flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition absolute -bottom-3 bg-brand-dark/95 px-2 py-0.5 rounded-full border border-brand-border z-10 shadow-lg backdrop-blur-sm">
                                   {['👍', '❤️', '😂', '👏'].map(emoji => (
-                                     <button 
+                                     <motion.button 
                                        key={emoji} 
+                                       whileHover={{ scale: 1.35 }}
+                                       whileTap={{ scale: 0.75 }}
                                        onClick={() => onToggleReaction && onToggleReaction(msg.id, emoji)} 
-                                       className="text-xs hover:scale-125 transition cursor-pointer"
+                                       className="text-xs transition cursor-pointer"
                                      >
                                        {emoji}
-                                     </button>
+                                     </motion.button>
                                   ))}
+                                  {onTogglePin && (
+                                    <motion.button
+                                      whileHover={{ scale: 1.2 }}
+                                      whileTap={{ scale: 0.8 }}
+                                      onClick={() => onTogglePin(msg.id)}
+                                      className="text-slate-400 hover:text-amber-400 ml-1 transition cursor-pointer"
+                                      title={msg.pinned ? "Unpin message" : "Pin message"}
+                                    >
+                                      <Pin className="w-3 h-3" />
+                                    </motion.button>
+                                  )}
                                 </div>
                                 {msg.reactions && msg.reactions.length > 0 && (
                                   <div className="flex items-center flex-wrap gap-1 mt-1">
-                                    {msg.reactions.map((r, rIdx) => (
-                                      <button
-                                        key={rIdx}
-                                        onClick={() => onToggleReaction && onToggleReaction(msg.id, r.emoji)}
-                                        className={`px-1.5 py-0.5 rounded-md text-[10px] flex items-center gap-1 border transition ${
-                                          r.users.includes(student.id)
-                                            ? 'bg-purple-500/30 border-purple-500/60 text-purple-200'
-                                            : 'bg-brand-dark/80 border-brand-border text-slate-300'
-                                        }`}
-                                      >
-                                        <span>{r.emoji}</span>
-                                        <span className="font-mono text-[9px]">{r.users.length}</span>
-                                      </button>
-                                    ))}
+                                    {msg.reactions.map((r, rIdx) => {
+                                      const hasReacted = r.users.includes(student.id);
+                                      return (
+                                        <motion.button
+                                          key={`${r.emoji}-${rIdx}`}
+                                          initial={{ scale: 0.7, opacity: 0 }}
+                                          animate={{ scale: 1, opacity: 1 }}
+                                          whileHover={{ scale: 1.12 }}
+                                          whileTap={{ scale: 0.85 }}
+                                          transition={{ type: "spring", stiffness: 450, damping: 22 }}
+                                          onClick={() => onToggleReaction && onToggleReaction(msg.id, r.emoji)}
+                                          className={`px-1.5 py-0.5 rounded-md text-[10px] flex items-center gap-1 border transition cursor-pointer ${
+                                            hasReacted
+                                              ? 'bg-purple-500/30 border-purple-500/60 text-purple-200'
+                                              : 'bg-brand-dark/80 border-brand-border text-slate-300'
+                                          }`}
+                                        >
+                                          <motion.span
+                                            key={r.users.length}
+                                            initial={{ scale: 1.35 }}
+                                            animate={{ scale: 1 }}
+                                            transition={{ duration: 0.15 }}
+                                          >
+                                            {r.emoji}
+                                          </motion.span>
+                                          <span className="font-mono text-[9px] font-bold">{r.users.length}</span>
+                                        </motion.button>
+                                      );
+                                    })}
                                   </div>
                                 )}
+                              {msg.senderId === student.id && msg.readBy && msg.readBy.length > 0 && (
+                                <span className="text-[9px] text-purple-300 mt-0.5 flex items-center gap-0.5 px-1">
+                                  <CheckCircle className="w-2.5 h-2.5" /> Seen
+                                </span>
+                              )}
                             </div>
                           ))}
+                          
+                          {/* Auto scroll lock Jump to Latest button in split mode */}
+                          <AnimatePresence>
+                            {isAutoScrollLocked && (
+                              <motion.button
+                                initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                                onClick={() => {
+                                  setIsAutoScrollLocked(false);
+                                  chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                                }}
+                                className="sticky bottom-2 ml-auto z-20 px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-full text-[10px] font-bold shadow-lg shadow-purple-900/60 flex items-center gap-1 border border-purple-400/40 transition cursor-pointer"
+                              >
+                                <ChevronDown className="w-3 h-3 animate-bounce" />
+                                <span>Jump to latest</span>
+                              </motion.button>
+                            )}
+                          </AnimatePresence>
                         </div>
                       </div>
                       {/* Right: Board */}
@@ -926,16 +1608,63 @@ export default function StudentApp({
                     </div>
                   ) : (
                     /* Default Full Height Mobile Chat View */
-                    <div className="flex-1 flex flex-col min-h-0">
+                    <div className="flex-1 flex flex-col min-h-0 relative">
                       {/* Channel title & Call launcher */}
-                      <div className="px-4 py-2.5 bg-brand-dark/80 border-b border-brand-border flex items-center justify-between shrink-0">
-                        <div className="flex items-center space-x-2 truncate">
+                      <div className="px-4 py-2.5 bg-brand-dark/80 border-b border-brand-border flex items-center justify-between shrink-0 flex-wrap gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
                           <MessageSquare className="w-4 h-4 text-purple-400 shrink-0" />
-                          <span className="text-xs sm:text-sm font-bold text-slate-100 truncate">
+                          <span className="text-xs sm:text-sm font-bold text-slate-100 truncate max-w-[120px] sm:max-w-[200px]">
                             {studentChannels.find(c => c.id === activeChannelId)?.name}
                           </span>
                         </div>
-                        <div className="flex items-center space-x-1.5">
+                        <div className="flex items-center space-x-1.5 ml-auto">
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 transform -translate-y-1/2 text-slate-400" />
+                            <input
+                              type="text"
+                              value={searchQuery}
+                              onChange={(e) => setSearchQuery(e.target.value)}
+                              placeholder="Search..."
+                              className="pl-7 pr-2 py-1 bg-brand-dark border border-brand-border rounded-lg text-xs text-slate-200 focus:outline-none focus:border-purple-500 w-24 sm:w-32 transition-all placeholder:text-slate-500"
+                            />
+                          </div>
+
+                          <button
+                            onClick={() => setShowPinned(!showPinned)}
+                            className={`px-2 py-1 rounded-lg text-xs font-semibold transition flex items-center space-x-1 cursor-pointer border ${
+                              showPinned 
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/30' 
+                                : 'bg-brand-dark hover:bg-brand-card text-slate-400 border-brand-border'
+                            }`}
+                            title="Pinned Messages"
+                          >
+                            <Pin className="w-3.5 h-3.5" />
+                            {pinnedMessages.length > 0 && (
+                              <span className="w-4 h-4 rounded-full bg-amber-500/20 flex items-center justify-center text-[9px] text-amber-300 font-bold ml-1">
+                                {pinnedMessages.length}
+                              </span>
+                            )}
+                          </button>
+
+                          {/* Caption History Overlay Button */}
+                          <button
+                            onClick={() => setIsCaptionHistoryOverlayOpen(true)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition flex items-center space-x-1 cursor-pointer border ${
+                              isCaptionHistoryOverlayOpen
+                                ? 'bg-purple-600 text-white border-purple-500 shadow-sm'
+                                : 'bg-purple-600/20 hover:bg-purple-600 text-purple-300 hover:text-white border-purple-500/30'
+                            }`}
+                            title="Open Live Captions & Translation History"
+                          >
+                            <Captions className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Captions</span>
+                            {captionsLog.length > 0 && (
+                              <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-purple-500/30 text-purple-200 border border-purple-400/40 ml-0.5">
+                                {captionsLog.length}
+                              </span>
+                            )}
+                          </button>
+
                           <button
                             onClick={() => {
                               startCall(
@@ -945,81 +1674,121 @@ export default function StudentApp({
                                 'class'
                               );
                             }}
-                            className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center space-x-1 cursor-pointer"
+                            className="px-2.5 py-1 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center space-x-1 cursor-pointer hidden sm:flex"
                           >
                             <Video className="w-3.5 h-3.5" />
-                            <span>Start Call</span>
+                            <span>Call</span>
                           </button>
 
                           <button
                             onClick={() => setActiveTab('whiteboard')}
-                            className="px-2.5 py-1 bg-purple-600/20 text-purple-300 border border-purple-500/30 rounded-lg text-xs font-semibold hover:bg-purple-600 hover:text-white transition flex items-center space-x-1 cursor-pointer"
+                            className="px-2 py-1 bg-purple-600/20 text-purple-300 border border-purple-500/30 rounded-lg text-xs font-semibold hover:bg-purple-600 hover:text-white transition flex items-center space-x-1 cursor-pointer"
+                            title="Virtual Whiteboard"
                           >
                             <PenTool className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Whiteboard</span>
                           </button>
                         </div>
                       </div>
 
-                      {/* Chat Messages Feed */}
-                      <div className="flex-1 p-3 sm:p-4 overflow-y-auto space-y-3 custom-scrollbar min-h-0">
-                        {channelMessages.length === 0 ? (
-                          <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs space-y-2 p-6 text-center">
-                            <div className="w-12 h-12 rounded-2xl bg-purple-600/10 flex items-center justify-center text-purple-400 mb-1">
-                              <MessageSquare className="w-6 h-6" />
+                      <div className="flex-1 flex overflow-hidden relative">
+                        <div className="flex-1 flex flex-col min-w-0">
+                          {/* Chat Messages Feed */}
+                          <div 
+                            onScroll={(e) => {
+                              const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+                              const isNearBottom = scrollHeight - scrollTop - clientHeight < 70;
+                              setIsAutoScrollLocked(!isNearBottom);
+                            }}
+                            className="flex-1 p-3 sm:p-4 overflow-y-auto space-y-3 custom-scrollbar min-h-0 relative"
+                          >
+                          {displayedMessages.length === 0 ? (
+                            <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs space-y-2 p-6 text-center">
+                              <div className="w-12 h-12 rounded-2xl bg-purple-600/10 flex items-center justify-center text-purple-400 mb-1">
+                                {searchQuery ? <Search className="w-6 h-6" /> : <MessageSquare className="w-6 h-6" />}
+                              </div>
+                              <p className="font-bold text-slate-300">{searchQuery ? 'No matching messages' : 'No messages in this channel yet'}</p>
+                              <p className="text-[11px] text-slate-500 max-w-xs">{searchQuery ? 'Try a different search term.' : 'Start the conversation, ask questions to your teacher, or share a whiteboard drawing!'}</p>
                             </div>
-                            <p className="font-bold text-slate-300">No messages in this channel yet</p>
-                            <p className="text-[11px] text-slate-500 max-w-xs">Start the conversation, ask questions to your teacher, or share a whiteboard drawing!</p>
-                          </div>
-                        ) : (
-                          channelMessages.map(msg => (
-                            <div key={msg.id} className={`group flex flex-col ${msg.senderId === student.id ? 'items-end' : 'items-start'}`}>
-                              <div className={`relative max-w-[85%] sm:max-w-[75%] rounded-2xl p-3 text-xs ${
-                                msg.senderId === student.id 
-                                  ? 'bg-purple-600 text-white rounded-tr-xs shadow-md shadow-purple-600/15' 
-                                  : 'bg-brand-dark border border-brand-border text-slate-200 rounded-tl-xs'
-                              }`}>
-                                <div className="flex justify-between items-baseline mb-1 space-x-2">
-                                  <div className="flex items-center space-x-1.5">
-                                    <span className="font-bold text-[11px]">{msg.senderName}</span>
-                                    {msg.senderRole && (
-                                      <span className="text-[8px] px-1.5 py-0.2 rounded bg-black/30 font-medium opacity-80 uppercase">
-                                        {msg.senderRole}
-                                      </span>
+                          ) : (
+                            displayedMessages.map(msg => (
+                              <div key={msg.id} className={`group flex flex-col ${msg.senderId === student.id ? 'items-end' : 'items-start'}`}>
+                                <div className={`relative max-w-[85%] sm:max-w-[75%] rounded-2xl p-3 text-xs ${
+                                  msg.senderId === student.id 
+                                    ? 'bg-purple-600 text-white rounded-tr-xs shadow-md shadow-purple-600/15' 
+                                    : 'bg-brand-dark border border-brand-border text-slate-200 rounded-tl-xs'
+                                }`}>
+                                  <div className="flex justify-between items-baseline mb-1 space-x-2">
+                                    <div className="flex items-center space-x-1.5">
+                                      <span className="font-bold text-[11px]">{msg.senderName}</span>
+                                      {msg.senderRole && (
+                                        <span className="text-[8px] px-1.5 py-0.2 rounded bg-black/30 font-medium opacity-80 uppercase">
+                                          {msg.senderRole}
+                                        </span>
+                                      )}
+                                      {msg.pinned && (
+                                        <Pin className="w-2.5 h-2.5 text-amber-300 fill-current opacity-80" />
+                                      )}
+                                    </div>
+                                    <span className="text-[9px] opacity-60 font-mono">{msg.timestamp}</span>
+                                  </div>
+                                  <p className="text-xs whitespace-pre-wrap leading-relaxed">{renderMessageText(msg.text)}</p>
+
+                                  <div className="flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition absolute -bottom-3 bg-brand-dark/95 px-2 py-0.5 rounded-full border border-brand-border z-10 shadow-lg backdrop-blur-sm">
+                                    {['👍', '❤️', '😂', '👏'].map(emoji => (
+                                      <motion.button 
+                                        key={emoji} 
+                                        whileHover={{ scale: 1.35 }}
+                                        whileTap={{ scale: 0.75 }}
+                                        onClick={() => onToggleReaction && onToggleReaction(msg.id, emoji)} 
+                                        className="text-xs transition cursor-pointer"
+                                      >
+                                        {emoji}
+                                      </motion.button>
+                                    ))}
+                                    {onTogglePin && (
+                                      <motion.button
+                                        whileHover={{ scale: 1.25 }}
+                                        whileTap={{ scale: 0.8 }}
+                                        onClick={() => onTogglePin(msg.id)}
+                                        className="text-slate-400 hover:text-amber-400 ml-1 transition cursor-pointer"
+                                        title={msg.pinned ? "Unpin message" : "Pin message"}
+                                      >
+                                        <Pin className="w-3 h-3" />
+                                      </motion.button>
                                     )}
                                   </div>
-                                  <span className="text-[9px] opacity-60 font-mono">{msg.timestamp}</span>
-                                </div>
-                                <p className="text-xs whitespace-pre-wrap leading-relaxed">{msg.text}</p>
-
-                                <div className="flex gap-1 mt-1 opacity-0 group-hover:opacity-100 transition absolute -bottom-3 bg-brand-dark/90 px-2 py-0.5 rounded-full border border-brand-border z-10">
-                                  {['👍', '❤️', '😂', '👏'].map(emoji => (
-                                    <button 
-                                      key={emoji} 
-                                      onClick={() => onToggleReaction && onToggleReaction(msg.id, emoji)} 
-                                      className="text-xs hover:scale-125 transition cursor-pointer"
-                                    >
-                                      {emoji}
-                                    </button>
-                                  ))}
-                                </div>
 
                                 {msg.reactions && msg.reactions.length > 0 && (
                                   <div className="flex items-center flex-wrap gap-1 mt-2">
-                                    {msg.reactions.map((r, rIdx) => (
-                                      <button
-                                        key={rIdx}
-                                        onClick={() => onToggleReaction && onToggleReaction(msg.id, r.emoji)}
-                                        className={`px-1.5 py-0.5 rounded-md text-[10px] flex items-center gap-1 border transition ${
-                                          r.users.includes(student.id)
-                                            ? 'bg-purple-500/30 border-purple-500/60 text-purple-200'
-                                            : 'bg-brand-dark/80 border-brand-border text-slate-300'
-                                        }`}
-                                      >
-                                        <span>{r.emoji}</span>
-                                        <span className="font-mono text-[9px]">{r.users.length}</span>
-                                      </button>
-                                    ))}
+                                    {msg.reactions.map((r, rIdx) => {
+                                      const hasReacted = r.users.includes(student.id);
+                                      return (
+                                        <motion.button
+                                          key={`${r.emoji}-${rIdx}`}
+                                          initial={{ scale: 0.7, opacity: 0 }}
+                                          animate={{ scale: 1, opacity: 1 }}
+                                          whileHover={{ scale: 1.12 }}
+                                          whileTap={{ scale: 0.85 }}
+                                          transition={{ type: "spring", stiffness: 450, damping: 22 }}
+                                          onClick={() => onToggleReaction && onToggleReaction(msg.id, r.emoji)}
+                                          className={`px-2 py-0.5 rounded-md text-[10px] flex items-center gap-1 border transition cursor-pointer ${
+                                            hasReacted
+                                              ? 'bg-purple-500/30 border-purple-500/60 text-purple-200'
+                                              : 'bg-brand-dark/80 border-brand-border text-slate-300'
+                                          }`}
+                                        >
+                                          <motion.span
+                                            key={r.users.length}
+                                            initial={{ scale: 1.4 }}
+                                            animate={{ scale: 1 }}
+                                            transition={{ duration: 0.18 }}
+                                          >
+                                            {r.emoji}
+                                          </motion.span>
+                                          <span className="font-mono text-[9px] font-bold">{r.users.length}</span>
+                                        </motion.button>
+                                      );
+                                    })}
                                   </div>
                                 )}
 
@@ -1036,9 +1805,12 @@ export default function StudentApp({
                                             className="max-h-56 w-full object-contain rounded-lg bg-black/40 cursor-pointer hover:opacity-90 transition" 
                                           />
                                         ) : (
-                                          <a href={att.url} download={att.name} className="flex items-center p-2 text-xs hover:underline">
-                                            <Paperclip className="w-3.5 h-3.5 mr-1.5 text-purple-300" />
-                                            <span className="truncate">{att.name}</span>
+                                          <a href={att.url} download={att.name} className="flex items-center p-2 text-xs hover:bg-black/30 transition group">
+                                            {getFileThumbnail(att)}
+                                            <div className="ml-3 flex flex-col overflow-hidden">
+                                              <span className="truncate font-semibold text-slate-200 group-hover:text-purple-300 transition">{att.name}</span>
+                                              <span className="text-[9px] text-slate-400">{att.size ? (att.size / 1024).toFixed(1) + ' KB' : 'Document'}</span>
+                                            </div>
                                           </a>
                                         )}
                                       </div>
@@ -1055,6 +1827,25 @@ export default function StudentApp({
                           ))
                         )}
                         <div ref={chatEndRef} />
+
+                        {/* Floating Jump to Latest Button with Auto Scroll Lock */}
+                        <AnimatePresence>
+                          {isAutoScrollLocked && (
+                            <motion.button
+                              initial={{ opacity: 0, y: 15, scale: 0.9 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: 15, scale: 0.9 }}
+                              onClick={() => {
+                                setIsAutoScrollLocked(false);
+                                chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                              }}
+                              className="fixed bottom-24 right-8 z-30 px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-full text-xs font-bold shadow-xl shadow-purple-950/70 flex items-center gap-1.5 border border-purple-400/40 transition cursor-pointer"
+                            >
+                              <ChevronDown className="w-4 h-4 animate-bounce" />
+                              <span>Jump to latest</span>
+                            </motion.button>
+                          )}
+                        </AnimatePresence>
                       </div>
 
                       {/* Attachments preview tray */}
@@ -1065,9 +1856,7 @@ export default function StudentApp({
                               {att.type === 'image' ? (
                                 <img src={att.url} alt={att.name} className="w-12 h-12 object-cover rounded-xl border border-purple-500" />
                               ) : (
-                                <div className="w-12 h-12 rounded-xl bg-brand-card border border-brand-border flex items-center justify-center text-xs">
-                                  <Paperclip className="w-4 h-4 text-purple-400" />
-                                </div>
+                                getFileThumbnail(att, true)
                               )}
                               <button
                                 type="button"
@@ -1083,7 +1872,68 @@ export default function StudentApp({
 
                       {/* Message Input Box */}
                       <div className="p-2.5 sm:p-3 border-t border-brand-border bg-brand-dark/60 shrink-0">
-                        <form onSubmit={handleSendChatMessage} className="flex items-center space-x-1.5">
+                        {/* Live Floating Caption Subtitle Banner */}
+                        <AnimatePresence>
+                          {(activeLiveCaption || interimSpeechText) && (
+                            <motion.div
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: 10 }}
+                              className="mb-2 p-2.5 bg-gradient-to-r from-purple-950/90 via-slate-900 to-brand-dark border border-purple-500/40 rounded-2xl shadow-xl backdrop-blur-md flex items-center justify-between gap-3 animate-fadeIn"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                <div className="w-7 h-7 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center shrink-0">
+                                  <Captions className="w-3.5 h-3.5 text-purple-300 animate-pulse" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 mb-0.5">
+                                    <span className="text-[10px] font-bold text-purple-300 truncate">
+                                      {activeLiveCaption?.speakerName || student.name}
+                                    </span>
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded-md bg-purple-500/20 text-purple-200 border border-purple-400/30 font-medium">
+                                      {preferredLanguage.flag} {preferredLanguage.code.toUpperCase()}
+                                    </span>
+                                    {isRecording && (
+                                      <span className="text-[8px] px-1.5 py-0.2 rounded-full bg-red-500/20 text-red-300 font-bold border border-red-500/30 animate-pulse">
+                                        Live Mic
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-slate-100 font-semibold truncate leading-tight">
+                                    "{activeLiveCaption?.translatedText || activeLiveCaption?.originalText || interimSpeechText}"
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setIsCaptionHistoryOverlayOpen(true)}
+                                  className="px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-[10px] font-bold shadow-sm transition cursor-pointer"
+                                >
+                                  History
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveLiveCaption(null)}
+                                  className="p-1 text-slate-400 hover:text-slate-200 rounded-md hover:bg-white/10 transition cursor-pointer"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
+                        {pendingTranscription && (
+                          <div className="mb-2 p-2.5 bg-brand-dark border border-brand-border rounded-xl flex items-center justify-between animate-fadeIn">
+                            <div className="text-xs text-slate-300 italic flex-1 truncate pr-3">"{pendingTranscription}"</div>
+                            <div className="flex space-x-2 shrink-0">
+                              <button type="button" onClick={() => setPendingTranscription(null)} className="px-3 py-1 bg-brand-card hover:bg-slate-700 rounded-lg text-xs font-semibold text-slate-300 transition cursor-pointer">Discard</button>
+                              <button type="button" onClick={() => { setChatMessageText(prev => (prev + (prev ? " " : "") + pendingTranscription)); setPendingTranscription(null); }} className="px-3 py-1 bg-purple-600 hover:bg-purple-500 rounded-lg text-xs font-semibold text-white transition shadow shadow-purple-500/20 cursor-pointer">Insert</button>
+                            </div>
+                          </div>
+                        )}
+                        <form onSubmit={handleSendChatMessage} className="flex items-center space-x-1.5 relative">
                           <input
                             type="file"
                             ref={fileInputRef}
@@ -1115,37 +1965,202 @@ export default function StudentApp({
                             <Paperclip className="w-4 h-4" />
                           </button>
 
+                          {/* Toggle Voice Recognition Mode button */}
                           <button
                             type="button"
-                            onClick={isRecording ? stopRecording : startRecording}
+                            onClick={() => {
+                              const newMode = voiceRecognitionMode === 'push-to-talk' ? 'hands-free' : 'push-to-talk';
+                              setVoiceRecognitionMode(newMode);
+                              if (isRecording) {
+                                toggleVoiceRecording();
+                              }
+                              showToast(newMode === 'hands-free' 
+                                ? "🎙️ Switched to 'Hands-free Voice-to-Text' mode (mic stays active until stopped)" 
+                                : "📻 Switched to 'Push-to-Talk' voice mode"
+                              );
+                            }}
+                            className={`p-2.5 rounded-xl border transition cursor-pointer flex items-center gap-1 text-xs font-semibold ${
+                              voiceRecognitionMode === 'hands-free'
+                                ? 'bg-purple-600/25 text-purple-300 border-purple-500/60 shadow-sm'
+                                : 'bg-brand-dark text-slate-400 border-brand-border hover:text-slate-200'
+                            }`}
+                            title={voiceRecognitionMode === 'hands-free' ? "Voice Mode: Hands-free Voice-to-Text (Continuous) - Click to switch to Push-to-Talk" : "Voice Mode: Push-to-Talk - Click to switch to Hands-free Voice-to-Text"}
+                          >
+                            <Radio className={`w-4 h-4 ${voiceRecognitionMode === 'hands-free' ? 'text-purple-400 animate-pulse' : ''}`} />
+                            <span className="text-[10px] hidden md:inline font-bold">
+                              {voiceRecognitionMode === 'hands-free' ? 'Hands-Free' : 'PTT'}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setTranscriptionMode(prev => prev === 'live' ? 'text' : 'live')}
+                            className="p-2.5 text-slate-400 hover:text-purple-400 bg-brand-dark border border-brand-border rounded-xl transition cursor-pointer relative"
+                            title={transcriptionMode === 'live' ? "Live Transcription Mode" : "Standard Text Mode"}
+                          >
+                            {transcriptionMode === 'live' ? <MessageSquare className="w-4 h-4 text-purple-400" /> : <FileText className="w-4 h-4" />}
+                            {transcriptionMode === 'live' && (
+                              <div className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-green-500 rounded-full shadow-[0_0_5px_rgba(34,197,94,0.8)] animate-pulse" />
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={toggleVoiceRecording}
                             className={`p-2.5 rounded-xl transition cursor-pointer flex items-center justify-center shrink-0 ${
                               isRecording 
                                 ? 'bg-red-500/20 text-red-500 border border-red-500/50 animate-pulse' 
                                 : 'bg-brand-dark border border-brand-border text-slate-400 hover:text-purple-400'
                             }`}
-                            title={isRecording ? "Stop Recording" : "Voice Record"}
+                            title={
+                              isRecording 
+                                ? "Stop Microphone" 
+                                : voiceRecognitionMode === 'hands-free' 
+                                  ? "Start Hands-free Voice-to-Text" 
+                                  : "Push-to-Talk Recording"
+                            }
                           >
                             {isRecording ? <Square className="w-4 h-4 fill-current" /> : <Mic className="w-4 h-4" />}
                           </button>
 
-                          <input
-                            type="text"
-                            value={chatMessageText}
-                            onChange={e => setChatMessageText(e.target.value)}
-                            placeholder="Message group or teacher..."
-                            className="flex-1 bg-brand-dark border border-brand-border rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500"
-                          />
+                          <div className="flex-1 relative">
+                            {isRecording ? (
+                              <div className="absolute inset-0 bg-brand-dark border border-red-500/50 rounded-xl px-3.5 flex items-center overflow-hidden">
+                                <span className="text-xs text-red-400 font-medium animate-pulse shrink-0">
+                                  {voiceRecognitionMode === 'hands-free' ? 'Listening hands-free...' : 'Recording...'}
+                                </span>
+                                <div className="flex-1 h-full flex items-center ml-3">
+                                  <svg className="w-full h-6 text-red-400" viewBox="0 0 200 32" preserveAspectRatio="none">
+                                    <path
+                                      d={`M 0 16 Q 25 ${16 - audioLevel/4} 50 16 T 100 16 T 150 16 T 200 16`}
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2.5"
+                                      strokeLinecap="round"
+                                      className="transition-all duration-75"
+                                    />
+                                    <path
+                                      d={`M 0 16 Q 25 ${16 + audioLevel/5} 50 16 T 100 16 T 150 16 T 200 16`}
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2.5"
+                                      strokeLinecap="round"
+                                      opacity="0.3"
+                                      className="transition-all duration-75"
+                                    />
+                                  </svg>
+                                </div>
+                              </div>
+                            ) : (
+                              <input
+                                type="text"
+                                value={chatMessageText}
+                                onChange={e => setChatMessageText(e.target.value)}
+                                placeholder={
+                                  isTranscribing 
+                                    ? "Transcribing audio..." 
+                                    : voiceRecognitionMode === 'hands-free'
+                                      ? "Message or click mic to dictate hands-free..."
+                                      : "Message group or teacher..."
+                                }
+                                disabled={isTranscribing}
+                                className="w-full bg-brand-dark border border-brand-border rounded-xl px-3.5 py-2.5 text-xs text-slate-200 focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                              />
+                            )}
+                            {isTranscribing && !isRecording && (
+                              <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                                <Loader2 className="w-4 h-4 text-purple-400 animate-spin" />
+                              </div>
+                            )}
+                          </div>
 
                           <button
                             type="submit"
                             disabled={!chatMessageText.trim() && chatAttachments.length === 0}
-                            className="p-2.5 bg-purple-600 text-white rounded-xl hover:bg-purple-500 transition disabled:opacity-40 cursor-pointer shadow-md shadow-purple-600/20 shrink-0"
+                            className="p-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white rounded-xl transition cursor-pointer shadow-lg shadow-purple-600/30 shrink-0"
                           >
                             <Send className="w-4 h-4" />
                           </button>
                         </form>
                       </div>
                     </div>
+                      
+                      {showPinned && (
+                        <div className="absolute right-0 top-0 bottom-0 w-64 bg-brand-card border-l border-brand-border z-20 shadow-2xl flex flex-col transition-all">
+                          <div className="p-3 border-b border-brand-border flex items-center justify-between bg-brand-dark/50">
+                            <h3 className="font-bold text-xs text-amber-300 flex items-center gap-1.5">
+                              <Pin className="w-3.5 h-3.5 fill-current" /> Pinned
+                            </h3>
+                            <button onClick={() => setShowPinned(false)} className="text-slate-400 hover:text-white transition cursor-pointer">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar">
+                            {pinnedMessages.length === 0 ? (
+                              <p className="text-center text-slate-500 text-[10px] py-4">No pinned messages.</p>
+                            ) : (
+                              pinnedMessages.map(msg => (
+                                <div key={`pinned-${msg.id}`} className="bg-brand-dark p-2.5 rounded-xl border border-brand-border/50 text-xs shadow-md shadow-black/20">
+                                  <div className="flex justify-between items-baseline mb-1">
+                                    <span className="font-bold text-[10px] text-amber-200 truncate pr-2">{msg.senderName}</span>
+                                    <span className="text-[8px] text-slate-500 opacity-80 shrink-0">{msg.timestamp}</span>
+                                  </div>
+                                  <p className="text-slate-300 line-clamp-3 leading-relaxed">{renderMessageText(msg.text)}</p>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Caption History Drawer / Overlay */}
+                      {isCaptionHistoryOverlayOpen && (
+                        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-30 flex justify-end animate-fadeIn">
+                          <div className="w-full sm:w-[480px] lg:w-[540px] h-full bg-brand-card border-l border-brand-border shadow-2xl flex flex-col overflow-hidden">
+                            <CaptionHistoryView
+                              isOverlay={true}
+                              onCloseOverlay={() => setIsCaptionHistoryOverlayOpen(false)}
+                              captionsLog={captionsLog.map(c => ({
+                                id: c.id,
+                                speakerId: c.speakerId,
+                                speakerName: c.speakerName,
+                                speakerRole: c.speakerRole,
+                                originalText: c.originalText,
+                                translatedText: c.translatedText,
+                                sourceLang: inputLanguage.code,
+                                targetLang: preferredLanguage.code,
+                                timestamp: c.timestamp,
+                                isSelf: c.speakerId === student.id || c.isLocal
+                              }))}
+                              preferredLanguage={preferredLanguage}
+                              onLanguageChange={handlePreferredLanguageChange}
+                              isRecording={isRecording}
+                              onToggleRecording={toggleVoiceRecording}
+                              voiceRecognitionMode={voiceRecognitionMode}
+                              onToggleVoiceMode={(mode) => setVoiceRecognitionMode(mode)}
+                              audioLevel={audioLevel}
+                              interimSpeechText={interimSpeechText}
+                              speechEngineStatus={speechEngineStatus}
+                              onRestartSpeechEngine={restartSpeechEngine}
+                              onSendCaptionToChat={(text) => {
+                                setChatMessageText(prev => (prev ? prev.trim() + ' ' : '') + text);
+                                setIsCaptionHistoryOverlayOpen(false);
+                                showToast("Caption inserted into chat message!");
+                              }}
+                              onClearCaptions={() => {
+                                setCaptionsLog([]);
+                                showToast("Captions history cleared.");
+                              }}
+                              onTriggerPresetSpeech={(presetText) => {
+                                commitSpeechTranscript(presetText);
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      
+                    </div>
+                  </div>
                   )}
                 </div>
               </div>
@@ -1428,7 +2443,44 @@ export default function StudentApp({
                 <World student={student} isTeacher={isAdminViewing} />
               </div>
             )}
+            
+            {activeTab === 'preferences' && (
+              <div className="space-y-4 animate-fadeIn max-w-xl">
+                <h1 className="text-xl sm:text-2xl font-black text-slate-100 flex items-center">
+                  <Settings className="w-6 h-6 mr-3 text-purple-400" />
+                  App Preferences
+                </h1>
 
+                <div className="bg-brand-card rounded-3xl border border-brand-border p-5 sm:p-6 shadow-xl space-y-6">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-100 mb-3 border-b border-brand-border pb-2">Voice Transcription</h3>
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between bg-brand-dark/50 p-4 rounded-xl border border-brand-border/50">
+                        <div className="pr-4">
+                          <p className="text-sm font-bold text-slate-200">Auto-Insert Transcriptions</p>
+                          <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">Automatically place transcribed text directly into the chat box without prompting for confirmation.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAutoInsertTranscription(!autoInsertTranscription)}
+                          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors cursor-pointer shrink-0 ${
+                            autoInsertTranscription ? 'bg-purple-600' : 'bg-slate-600'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              autoInsertTranscription ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+              </motion.div>
+            </AnimatePresence>
           </div>
         </main>
       </div>
@@ -1442,7 +2494,8 @@ export default function StudentApp({
           { id: 'whiteboard', label: 'Board', icon: PenTool },
           { id: 'calendar', label: 'Schedule', icon: Calendar },
           { id: 'grades', label: 'Grades', icon: FileText },
-          { id: 'profile', label: 'Profile', icon: User }
+          { id: 'profile', label: 'Profile', icon: User },
+          { id: 'preferences', label: 'Prefs', icon: Settings }
         ].map(item => {
           const isActive = activeTab === item.id;
           return (

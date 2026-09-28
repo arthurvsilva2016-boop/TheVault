@@ -6,6 +6,17 @@ service cloud.firestore {
       allow read, write: if true;
     }
     
+    match /live_calls/{document=**} {
+      allow read, write: if true;
+    }
+    match /live_calls/{callId}/signaling/{document=**} {
+      allow read, write: if true;
+    }
+    
+    match /vivlio_worlds/{document=**} {
+      allow read, write: if true;
+    }
+    
     match /{document=**} {
       allow read, write: if false;
     }

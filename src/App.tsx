@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { useFirebaseSync } from './hooks/useFirebaseSync';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
@@ -24,8 +25,8 @@ import World from './components/game/World';
 import Login from './components/Login';
 import StudentApp from './components/StudentApp';
 import VaultCallOverlay from './components/calling/VaultCallOverlay';
-import { Tab, Student, AppAccess, Employee, Group, Transaction, Occurrence, ClassSession, Meeting, BookCollection, RolePreset, AppNotification, Task, EmployeeChatMessage, EmployeeMessageReaction } from './types';
-import { MOCK_STUDENTS, MOCK_GROUPS, MOCK_EMPLOYEES, MOCK_TXS, MOCK_OCCURRENCES, MOCK_CLASS_SESSIONS, MOCK_MEETINGS, MOCK_COLLECTIONS, MOCK_ROLE_PRESETS, MOCK_MESSAGES, MOCK_TASKS } from './data';
+import { Tab, Student, AppAccess, Employee, Group, Transaction, Occurrence, ClassSession, Meeting, BookCollection, RolePreset, AppNotification, Task, EmployeeChatMessage, EmployeeMessageReaction, ChatChannel } from './types';
+import { MOCK_STUDENTS, MOCK_GROUPS, MOCK_EMPLOYEES, MOCK_TXS, MOCK_OCCURRENCES, MOCK_CLASS_SESSIONS, MOCK_MEETINGS, MOCK_COLLECTIONS, MOCK_ROLE_PRESETS, MOCK_MESSAGES, MOCK_TASKS, DEFAULT_CHAT_CHANNELS } from './data';
 import { resetAllAppDataToDefaults } from './utils/resetData';
 
 import { auth } from './firebase';
@@ -74,6 +75,7 @@ export default function App() {
   const [tasks, setTasks, tasksLoaded] = useFirebaseSync<Task>('tasks', MOCK_TASKS);
   const [meetings, setMeetings, meetingsLoaded] = useFirebaseSync<Meeting>('meetings', MOCK_MEETINGS);
   const [employeeMessages, setEmployeeMessages, employeeMessagesLoaded] = useFirebaseSync<EmployeeChatMessage>('employee_messages', MOCK_MESSAGES);
+  const [chatChannels, setChatChannels, chatChannelsLoaded] = useFirebaseSync<ChatChannel>('chat_channels', DEFAULT_CHAT_CHANNELS);
   const [appAccesses, setAppAccesses, appAccessesLoaded] = useFirebaseSync<AppAccess>('app_accesses', []);
 
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -256,8 +258,10 @@ export default function App() {
         };
         await uploadBackupToDrive(JSON.stringify(backupData, null, 2), `vault_autobackup_${new Date().toISOString().split('T')[0]}.json`);
         console.log("Successfully auto-saved to Google Drive");
-      } catch (err) {
-        if (err.message !== "Authentication required") { console.error("Auto-save to Google Drive failed", err); }
+      } catch (err: any) {
+        if (err?.message !== "Authentication required") {
+          console.warn("Auto-save to Google Drive skipped:", err?.message || err);
+        }
       }
     };
     
@@ -604,6 +608,28 @@ export default function App() {
     }));
   };
 
+  const handleAddChannel = (newChannel: ChatChannel) => {
+    setChatChannels(prev => {
+      if (prev.some(c => c.id === newChannel.id)) return prev;
+      return [...prev, newChannel];
+    });
+  };
+
+  const handleUpdateChannel = (updatedChannel: ChatChannel) => {
+    setChatChannels(prev => prev.map(c => c.id === updatedChannel.id ? updatedChannel : c));
+  };
+
+  const handleDeleteChannel = (channelId: string, deleteMessages = true) => {
+    setChatChannels(prev => prev.filter(c => c.id !== channelId));
+    if (deleteMessages) {
+      setEmployeeMessages(prev => prev.filter(m => m.channelId !== channelId));
+    }
+  };
+
+  const handleClearDmMessages = (dmChannelId: string) => {
+    setEmployeeMessages(prev => prev.filter(m => m.channelId !== dmChannelId));
+  };
+
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
@@ -789,6 +815,7 @@ export default function App() {
               meetings,
               tasks,
               employeeMessages,
+              chatChannels,
               rolePresets
             }}
           />
@@ -801,11 +828,16 @@ export default function App() {
             activeEmployee={activeEmployee}
             employees={employees}
             messages={employeeMessages}
+            channels={chatChannels}
             onSendMessage={handleSendMessage}
             onDeleteMessage={handleDeleteMessage}
             onToggleReaction={handleToggleReaction}
             onTogglePin={handleTogglePin}
             onMarkMessageRead={handleMarkMessageRead}
+            onAddChannel={handleAddChannel}
+            onUpdateChannel={handleUpdateChannel}
+            onDeleteChannel={handleDeleteChannel}
+            onClearDmMessages={handleClearDmMessages}
           />
         );
       default:
@@ -814,7 +846,7 @@ export default function App() {
   };
 
   
-  const isDataLoaded = employeesLoaded && rolePresetsLoaded && studentsLoaded && groupsLoaded && collectionsLoaded && classSessionsLoaded && transactionsLoaded && occurrencesLoaded && tasksLoaded && meetingsLoaded && employeeMessagesLoaded && appAccessesLoaded;
+  const isDataLoaded = employeesLoaded && rolePresetsLoaded && studentsLoaded && groupsLoaded && collectionsLoaded && classSessionsLoaded && transactionsLoaded && occurrencesLoaded && tasksLoaded && meetingsLoaded && employeeMessagesLoaded && chatChannelsLoaded && appAccessesLoaded;
 
   if (!isDataLoaded) {
     return (
@@ -939,7 +971,17 @@ export default function App() {
       <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 no-scrollbar relative min-w-0">
         
         <div className="max-w-[1680px] w-full mx-auto space-y-6 pb-20 md:pb-0">
-          {renderContent()}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              {renderContent()}
+            </motion.div>
+          </AnimatePresence>
         </div>
       </main>
 

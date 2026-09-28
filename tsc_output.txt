@@ -1,8 +1,0 @@
-src/components/CollectionsManager.tsx(517,11): error TS1005: ')' expected.
-src/components/CollectionsManager.tsx(519,8): error TS1381: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?
-src/components/GroupProfile.tsx(221,6): error TS17008: JSX element 'section' has no corresponding closing tag.
-src/components/GroupProfile.tsx(548,8): error TS1381: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?
-src/components/GroupProfile.tsx(710,7): error TS17002: Expected corresponding JSX closing tag for 'div'.
-src/components/GroupProfile.tsx(711,4): error TS1005: '}' expected.
-src/components/GroupProfile.tsx(712,1): error TS1381: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?
-src/components/GroupProfile.tsx(713,1): error TS1005: '</' expected.
